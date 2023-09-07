@@ -106,22 +106,45 @@ FixRigidShell::FixRigidShell(LAMMPS *lmp, int narg, char **arg) :
   tagint *bodyID = nullptr;
   int nlocal = atom->nlocal;
 
-  if (narg < 4) error->all(FLERR,"Illegal fix rigid/shell command");
-  if (strcmp(arg[3],"molecule") == 0) {
+
+  if (narg < 6) error->all(FLERR,"1 Illegal fix rigid/shell command");
+  
+  hstr = mustr = nullptr;
+  hstyle = mustyle = CONSTANT;
+
+
+  if (utils::strmatch(arg[3],"^v_")) {
+    hstr = utils::strdup(arg[3]+2);
+    hstyle = EQUAL;
+  } else {
+    pf = utils::numeric(FLERR,arg[3],false,lmp);
+    // Conver from pressure units to force/distance^2
+    pf /= force->nktv2p;
+    hstyle = CONSTANT;
+  }
+  if (utils::strmatch(arg[4],"^v_")) {
+    mustr = utils::strdup(arg[4]+2);
+    mustyle = EQUAL;
+  } else {
+    mu = utils::numeric(FLERR,arg[4],false,lmp);
+    mustyle = CONSTANT;
+  }
+
+  if (strcmp(arg[5],"molecule") == 0) {
     if (atom->molecule_flag == 0)
       error->all(FLERR,"Fix rigid/shell requires atom attribute molecule");
     bodyID = atom->molecule;
 
-  } else if (strcmp(arg[3],"custom") == 0) {
-    if (narg < 5) error->all(FLERR,"Illegal fix rigid/shell command");
+  } else if (strcmp(arg[5],"custom") == 0) {
+    if (narg < 7) error->all(FLERR,"2 Illegal fix rigid/shell command");
       bodyID = new tagint[nlocal];
       customflag = 1;
 
       // determine whether atom-style variable or atom property is used
 
-      if (utils::strmatch(arg[4],"^i_")) {
+      if (utils::strmatch(arg[6],"^i_")) {
         int is_double,cols;
-        int custom_index = atom->find_custom(arg[4]+2,is_double,cols);
+        int custom_index = atom->find_custom(arg[6]+2,is_double,cols);
         if (custom_index == -1)
           error->all(FLERR,"Fix rigid/shell custom requires previously defined property/atom");
         else if (is_double || cols)
@@ -138,13 +161,13 @@ FixRigidShell::FixRigidShell(LAMMPS *lmp, int narg, char **arg) :
             bodyID[i] = (tagint)(value[i] - minval + 1);
           else bodyID[i] = 0;
 
-      } else if (utils::strmatch(arg[4],"^v_")) {
-        int ivariable = input->variable->find(arg[4]+2);
+      } else if (utils::strmatch(arg[6],"^v_")) {
+        int ivariable = input->variable->find(arg[6]+2);
         if (ivariable < 0)
-          error->all(FLERR,"Variable {} for fix rigid/shell custom does not exist", arg[4]+2);
+          error->all(FLERR,"Variable {} for fix rigid/shell custom does not exist", arg[6]+2);
         if (input->variable->atomstyle(ivariable) == 0)
           error->all(FLERR,"Fix rigid/shell custom variable {} is not atom-style variable",
-                     arg[4]+2);
+                     arg[6]+2);
         auto value = new double[nlocal];
         input->variable->compute_atom(ivariable,0,value,1,0);
         int minval = INT_MAX;
@@ -159,7 +182,7 @@ FixRigidShell::FixRigidShell(LAMMPS *lmp, int narg, char **arg) :
           else bodyID[0] = 0;
         delete[] value;
       } else error->all(FLERR,"Unsupported fix rigid custom property");
-  } else error->all(FLERR,"Illegal fix rigid/shell command");
+  } else error->all(FLERR,"3 Illegal fix rigid/shell command");
 
   if (atom->map_style == Atom::MAP_NONE)
     error->all(FLERR,"Fix rigid/shell requires an atom map, see atom_modify");
@@ -202,16 +225,16 @@ FixRigidShell::FixRigidShell(LAMMPS *lmp, int narg, char **arg) :
     p_flag[i] = 0;
   }
 
-  int iarg = 4;
+  int iarg = 6;
   if (customflag) ++iarg;
 
   while (iarg < narg) {
     if (strcmp(arg[iarg],"langevin") == 0) {
-      if (iarg+5 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
+      if (iarg+5 > narg) error->all(FLERR,"4 Illegal fix rigid/shell command");
       if ((strcmp(style,"rigid/shell") != 0) &&
           (strcmp(style,"rigid/nve/shell") != 0) &&
           (strcmp(style,"rigid/nph/shell") != 0))
-        error->all(FLERR,"Illegal fix rigid/shell command");
+        error->all(FLERR,"5 Illegal fix rigid/shell command");
       langflag = 1;
       t_start = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       t_stop = utils::numeric(FLERR,arg[iarg+2],false,lmp);
@@ -219,11 +242,11 @@ FixRigidShell::FixRigidShell(LAMMPS *lmp, int narg, char **arg) :
       seed = utils::inumeric(FLERR,arg[iarg+4],false,lmp);
       if (t_period <= 0.0)
         error->all(FLERR,"Fix rigid/shell langevin period must be > 0.0");
-      if (seed <= 0) error->all(FLERR,"Illegal fix rigid/shell command");
+      if (seed <= 0) error->all(FLERR,"6 Illegal fix rigid/shell command");
       iarg += 5;
 
     } else if (strcmp(arg[iarg],"infile") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
+      if (iarg+2 > narg) error->all(FLERR,"7 Illegal fix rigid/shell command");
       delete[] inpfile;
       inpfile = utils::strdup(arg[iarg+1]);
       restart_file = 1;
@@ -479,6 +502,11 @@ FixRigidShell::FixRigidShell(LAMMPS *lmp, int narg, char **arg) :
   // wait to setup bodies until comm stencils are defined
 
   setupflag = 0;
+
+  // set hardness components once and for all if CONSTANT
+
+  varflag = CONSTANT;
+  if (hstyle != CONSTANT || mustyle != CONSTANT) varflag = EQUAL;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -520,7 +548,8 @@ int FixRigidShell::setmask()
   int mask = 0;
   mask |= INITIAL_INTEGRATE;
   mask |= FINAL_INTEGRATE;
-  if (langflag) mask |= POST_FORCE;
+  mask |= POST_FORCE;
+  // if (langflag) mask |= POST_FORCE;
   mask |= PRE_NEIGHBOR;
   mask |= INITIAL_INTEGRATE_RESPA;
   mask |= FINAL_INTEGRATE_RESPA;
@@ -553,7 +582,23 @@ void FixRigidShell::init()
                        ifix->style, ifix->id);
     }
   }
+  // check variables
 
+    if (hstr) {
+      hvar = input->variable->find(hstr);
+      if (hvar < 0)
+        error->all(FLERR,"Variable name for fix rigid/shell does not exist");
+      if (!input->variable->equalstyle(hvar))
+        error->all(FLERR,"Variable for fix rigid/shell is invalid style");
+    }
+    if (mustr) {
+      muvar = input->variable->find(mustr);
+      if (muvar < 0)
+        error->all(FLERR,"Variable name for fix rigid/shell does not exist");
+      if (!input->variable->equalstyle(muvar))
+        error->all(FLERR,"Variable for fix rigid/shell is invalid style");
+    }
+    
   // warn if body properties are read from inpfile or a mol template file
   //   and the gravity keyword is not set and a gravity fix exists
   // this could mean body particles are overlapped
@@ -800,38 +845,8 @@ void FixRigidShell::initial_integrate(int vflag)
   commflag = INITIAL;
   comm->forward_comm(this,29);
 
-  // std::cout << "Normals for i = 1: (" << vertexdata[1][0] << ", " << vertexdata[1][1] << ", " << vertexdata[1][2] << ") " << std::endl;
-  
 
-  // set coords/orient and velocity/rotation of atoms in rigid bodies
-double **f = atom->f;
-
-  //  NeighList *l = neighbor->lists[list_index];
-  // std::cout << "inum: " << list->inum << std::endl;
-  // std::cout << "nlocal: " << atom->nlocal << std::endl;
-  //  for (int i = 0; i < list->inum; i++) {
-  for (int i = 0; i < atom->nlocal; i++) {
-    bool force_acting = MathExtra::len3(f[i]);
-    if (force_acting) {
-      int local_index = list->ilist[i];
-      int no_of_neighs = list->numneigh[i];
-      // std::cout << "atom: " << i << ", local index: " << local_index << ", numneigh: "
-		// << list->numneigh[i] << std::endl;
-      for (int j = 0; j < list->numneigh[i]; j++) {
-	int neigh_index = list->firstneigh[i][j];
-	double v_rel[3];
-	double x_rel[3];
-	double speed_of_approach;
-	if (gap_is_shrinking(local_index, neigh_index, v_rel, x_rel, &speed_of_approach)) {
-	  // A displacement occurs only if the objects are approaching each other.
-	  displacement_of_atom(i, (atom->radius)[neigh_index], speed_of_approach,
-			       v_rel, x_rel);
-    // std::cout << " displacement for atom " << i << ": (" << vertexdata[i][4] << ", " << vertexdata[i][5] << ", " << vertexdata[i][6] << ") normals: (" << vertexdata[i][0] << ", " << vertexdata[i][1] << ", " << vertexdata[i][2] << ")" << std::endl;
-	}
-      }
-    }
-  }
-
+  // set coords/orient and velocity/rotation of atoms in rigid bodies and displace atoms within the bodies
   set_xv();
 }
 
@@ -941,10 +956,57 @@ void FixRigidShell::enforce2d()
 
 void FixRigidShell::post_force(int /*vflag*/)
 {
-
-  
   if (langflag) apply_langevin_thermostat();
   if (earlyflag) compute_forces_and_torques();
+
+ // update hardness due to variables
+
+  if (varflag != CONSTANT) {
+    modify->clearstep_compute();
+    if (hstyle == EQUAL) pf = input->variable->compute_equal(hvar);
+    if (mustyle == EQUAL) mu = input->variable->compute_equal(muvar);
+    modify->addstep_compute(update->ntimestep + 1);
+  }
+
+
+  // Call abrasion functions
+  
+  double **f = atom->f;
+  double v_rel[3];
+	double x_rel[3];
+	double speed_of_approach;
+  bool force_acting;
+
+  int local_index;
+  int no_of_neighs;
+  int neigh_index;
+  //  NeighList *l = neighbor->lists[list_index];
+  // std::cout << "inum: " << list->inum << std::endl;
+  // std::cout << "nlocal: " << atom->nlocal << std::endl;
+  //  for (int i = 0; i < list->inum; i++) {
+  for (int i = 0; i < atom->nlocal; i++) {
+    force_acting = MathExtra::len3(f[i]);
+    if (force_acting) {
+      local_index = list->ilist[i];
+      no_of_neighs = list->numneigh[i];
+      // std::cout << "atom: " << i << ", local index: " << local_index << ", numneigh: "
+		// << list->numneigh[i] << std::endl;
+      for (int j = 0; j < list->numneigh[i]; j++) {
+	neigh_index = list->firstneigh[i][j];
+ 
+
+ 
+  if (atom2body[neigh_index] == atom2body[local_index]){
+    continue;}
+
+  // A displacement occurs only if the objects are approaching each other.
+	if (gap_is_shrinking(local_index, neigh_index, v_rel, x_rel, &speed_of_approach)) {
+    displacement_of_atom(i, (atom->radius)[neigh_index], speed_of_approach, v_rel, x_rel);
+      	}
+      }
+    }
+  }
+  
 
 }
 
@@ -974,13 +1036,13 @@ void FixRigidShell::areas_and_normals() {
   int newton_bond = force->newton_bond;
 
   for (int i = 0; i < nlocal; i++) {
-    vertexdata[i][0] = 0.0;
-    vertexdata[i][1] = 0.0;
-    vertexdata[i][2] = 0.0;
-    vertexdata[i][3] = 0.0;
-    vertexdata[i][4] = 0.0;
-    vertexdata[i][5] = 0.0;
-    vertexdata[i][6] = 0.0;
+    vertexdata[i][0] = 0.0; // x normal
+    vertexdata[i][1] = 0.0; // y normal
+    vertexdata[i][2] = 0.0; // z normal
+    vertexdata[i][3] = 0.0; // associated area
+    vertexdata[i][4] = 0.0; // x displacement velocity
+    vertexdata[i][5] = 0.0; // y displacement velocity
+    vertexdata[i][6] = 0.0; // z displacement velocity
   }
 
   norm1 = 0.0;
@@ -988,6 +1050,7 @@ void FixRigidShell::areas_and_normals() {
   norm3 = 0.0;
   sub_area = 0.0;
 
+  //  Storing each atom in each angle - Not currently specified to a single body (potential optimisation)
   for (n = 0; n < nanglelist; n++) {
     i1 = anglelist[n][0];
     i2 = anglelist[n][1];
@@ -1038,11 +1101,10 @@ void FixRigidShell::areas_and_normals() {
     //    std::cout << "Centroid: " << centroid[0] << " " << centroid[1]
     //	      << " " << centroid[2] << std::endl;
 
-    // // CHECK IF THE NORMAL POINTS INWARDS OR OUTWARDS HERE!
-    // // CHECK IF THE DOT PRODUCT WITH THE COM (Temporarily taken as [0,0,0]) IS < 0
+
+    // // CHECK IF THE DOT PRODUCT WITH THE COM) IS < 0 - CHECKS IF NORMALS ARE INVERTED
 
     // since we are using body coordinates, [0,0,0] is the COM?
-
     
     if  ((((centroid[0] - 0) * n1) + ((centroid[1] - 0) * n2) + ((centroid[2] - 0) * n3)) < 0) {
       // Flip normal if it is pointing the wrong way
@@ -1177,8 +1239,8 @@ void FixRigidShell::displacement_of_atom(int i, double r,
 				       double v_rel[3], double x_rel[3]) {
 
 
-  double pf = 10000000.0;                    // hardness
-  double mu = 0.25;                          // a constant used to calculate the shear hardness
+  // double pf = 10000000.0;                    // hardness
+  // double mu = 0.25;                          // a constant used to calculate the shear hardness
   double **f = atom->f;
   double normal[3];
   normal[0] = vertexdata[i][0];
@@ -1218,6 +1280,8 @@ void FixRigidShell::displacement_of_atom(int i, double r,
   double deltah = 0.0;
   // std::cout << "normal_component_of_force = " << normal_component_of_force << std::endl;
   // std::cout << "area*pf = " << area*pf << std::endl;
+
+  // Check if theres indentation
   bool iV = abs(normal_component_of_force) > area*pf;
 
   if (iV) {
@@ -1227,6 +1291,8 @@ void FixRigidShell::displacement_of_atom(int i, double r,
 
   // This is the normal displacement corresponding to deltas.
   double dsh = 0.0;
+
+  // Check if theres scratching
   bool iL = magnitude_of_tangential_force > area*mu*pf;
 
   bool overlapping = h > 0;
@@ -1239,9 +1305,9 @@ void FixRigidShell::displacement_of_atom(int i, double r,
   double total_normal_dispacement  = deltah - dsh;
   // std::cout << "total_normal_dispacement = " << total_normal_dispacement << std::endl;
   double displ_speed = total_normal_dispacement/dt;
-  vertexdata[i][4] = displ_speed*normal[0]; // x velocity for displacement
-  vertexdata[i][5] = displ_speed*normal[1]; // y velocity for displacement
-  vertexdata[i][6] = displ_speed*normal[2]; // z velocity for displacement
+  vertexdata[i][4] += displ_speed*normal[0]; // x velocity for displacement
+  vertexdata[i][5] += displ_speed*normal[1]; // y velocity for displacement
+  vertexdata[i][6] += displ_speed*normal[2]; // z velocity for displacement
   // std::cout << "vx: " << vertexdata[i][4] << std::endl;
   // std::cout << "vy: " << vertexdata[i][5] << std::endl;
   // std::cout << "vz: " << vertexdata[i][6] << std::endl;
@@ -1385,6 +1451,16 @@ void FixRigidShell::final_integrate()
   // virial is already setup from initial_integrate
 
   set_v();
+
+    // Update displace array here to move atoms within the body
+    // integrate position over the displacement velocity by a full step
+  int nlocal = atom->nlocal;
+  for (int i = 0; i < nlocal; i++) {
+    if (atom2body[i] < 0) continue;
+    displace[i][0] += dtv * vertexdata[i][4];
+    displace[i][1] += dtv * vertexdata[i][5];
+    displace[i][2] += dtv * vertexdata[i][6];
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1659,14 +1735,6 @@ void FixRigidShell::set_xv()
 
     // x = displacement from center-of-mass, based on body orientation
     // v = vcm + omega around center-of-mass
-
-
-    // Update displace array here to move atoms within the body
-    // integrate position over the displacement velocity by a full step
-
-    displace[i][0] += dtv * vertexdata[i][4];
-    displace[i][1] += dtv * vertexdata[i][5];
-    displace[i][2] += dtv * vertexdata[i][6];
 
     MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,displace[i],x[i]);
 
