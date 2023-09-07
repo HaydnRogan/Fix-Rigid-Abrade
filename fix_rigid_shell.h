@@ -40,6 +40,7 @@ class FixRigidShell : public Fix {
   void initial_integrate_respa(int, int, int) override;
   void final_integrate_respa(int, int) override;
   void write_restart_file(const char *) override;
+  enum { CONSTANT, EQUAL };
 
   void grow_arrays(int) override;
   void copy_arrays(int, int, int) override;
@@ -97,6 +98,14 @@ class FixRigidShell : public Fix {
   int nlinear;         // total # of linear rigid bodies
   tagint maxmol;       // max mol-ID
   double maxextent;    // furthest distance from body owner to body atom
+
+
+  double pf, mu;       // hardness and friction coefficient
+  
+  int varflag;
+  int hstyle, mustyle;
+  int hvar, muvar;
+  char *hstr, *mustr;
 
   struct Body {
     int natoms;            // total number of atoms in body
