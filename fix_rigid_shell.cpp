@@ -74,11 +74,16 @@ FixRigidShell::FixRigidShell(LAMMPS *lmp, int narg, char **arg) :
   rigid_flag = 1;
   virial_global_flag = virial_peratom_flag = 1;
   thermo_virial = 1;
-  create_attribute = 1;
   dof_flag = 1;
   enforce2d_flag = 1;
   stores_ids = 1;
   centroidstressflag = CENTROID_AVAIL;
+
+  restart_peratom = 1; //~ Per-atom information is saved to the restart file
+  peratom_flag = 1;
+  size_peratom_cols = 7; //~ normal x/y/z, area and displacement speed x/y/z
+  peratom_freq = 1; // every step, **TODO change to user input utils::inumeric(FLERR,arg[5],false,lmp);
+  create_attribute = 1; //fix stores attributes that need setting when a new atom is created
 
   MPI_Comm_rank(world,&me);
   MPI_Comm_size(world,&nprocs);
@@ -99,6 +104,14 @@ FixRigidShell::FixRigidShell(LAMMPS *lmp, int narg, char **arg) :
   dorient = nullptr;
   FixRigidShell::grow_arrays(atom->nmax);
   atom->add_callback(Atom::GROW);
+  atom->add_callback(Atom::RESTART);
+
+  // Set initial vertexdata values to zero
+  for (int i = 0; i < atom->nlocal; i++) {
+    vertexdata[i][0] = vertexdata[i][1] = vertexdata[i][2] = 0.0;
+    vertexdata[i][3] = 0.0;
+    vertexdata[i][4] = vertexdata[i][5] = vertexdata[i][6] = 0.0;
+  }
 
   // parse args for rigid body specification
 
@@ -117,16 +130,16 @@ FixRigidShell::FixRigidShell(LAMMPS *lmp, int narg, char **arg) :
     hstr = utils::strdup(arg[3]+2);
     hstyle = EQUAL;
   } else {
-    pf = utils::numeric(FLERR,arg[3],false,lmp);
+    hardness = utils::numeric(FLERR,arg[3],false,lmp);
     // Conver from pressure units to force/distance^2
-    pf /= force->nktv2p;
+    hardness /= force->nktv2p;
     hstyle = CONSTANT;
   }
   if (utils::strmatch(arg[4],"^v_")) {
     mustr = utils::strdup(arg[4]+2);
     mustyle = EQUAL;
   } else {
-    mu = utils::numeric(FLERR,arg[4],false,lmp);
+    fric_coeff = utils::numeric(FLERR,arg[4],false,lmp);
     mustyle = CONSTANT;
   }
 
@@ -516,6 +529,7 @@ FixRigidShell::~FixRigidShell()
   // unregister callbacks to this fix from Atom class
 
   atom->delete_callback(id,Atom::GROW);
+  atom->delete_callback(id,Atom::RESTART);
 
   // delete locally stored arrays
 
@@ -672,6 +686,7 @@ void FixRigidShell::setup_pre_neighbor()
     neighbor->build_topology();
     std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ : Calling setup_bodies_static() ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
     setup_bodies_static();
+    areas_and_normals();
   }
   else pre_neighbor();
 
@@ -798,9 +813,9 @@ void FixRigidShell::setup(int vflag)
 
 void FixRigidShell::initial_integrate(int vflag)
 {
-  areas_and_normals();
+  
   double dtfm;
-
+  double stationary_flag = 0.0;
   //check(2);
 
   for (int ibody = 0; ibody < nlocal_body; ibody++) {
@@ -809,9 +824,9 @@ void FixRigidShell::initial_integrate(int vflag)
     // update vcm by 1/2 step
 
     dtfm = dtf / b->mass;
-    b->vcm[0] += dtfm * b->fcm[0];
-    b->vcm[1] += dtfm * b->fcm[1];
-    b->vcm[2] += dtfm * b->fcm[2];
+    b->vcm[0] += dtfm * b->fcm[0] * stationary_flag;
+    b->vcm[1] += dtfm * b->fcm[1] * stationary_flag;
+    b->vcm[2] += dtfm * b->fcm[2] * stationary_flag;
 
     // update xcm by full step
 
@@ -821,9 +836,9 @@ void FixRigidShell::initial_integrate(int vflag)
 
     // update angular momentum by 1/2 step
 
-    b->angmom[0] += dtf * b->torque[0];
-    b->angmom[1] += dtf * b->torque[1];
-    b->angmom[2] += dtf * b->torque[2];
+    b->angmom[0] += dtf * b->torque[0] * stationary_flag;
+    b->angmom[1] += dtf * b->torque[1] * stationary_flag;
+    b->angmom[2] += dtf * b->torque[2] * stationary_flag;
 
     // compute omega at 1/2 step from angmom at 1/2 step and current q
     // update quaternion a full step via Richardson iteration
@@ -956,6 +971,9 @@ void FixRigidShell::enforce2d()
 
 void FixRigidShell::post_force(int /*vflag*/)
 {
+
+  // double **v = atom->v;  
+  // std::cout << "v of 1678" << ": (" << v[1678][0] << ", " << v[1678][1] << ", " << v[1678][2] << ")" <<  std::endl;
   if (langflag) apply_langevin_thermostat();
   if (earlyflag) compute_forces_and_torques();
 
@@ -963,55 +981,84 @@ void FixRigidShell::post_force(int /*vflag*/)
 
   if (varflag != CONSTANT) {
     modify->clearstep_compute();
-    if (hstyle == EQUAL) pf = input->variable->compute_equal(hvar);
-    if (mustyle == EQUAL) mu = input->variable->compute_equal(muvar);
+    if (hstyle == EQUAL) hardness = input->variable->compute_equal(hvar);
+    if (mustyle == EQUAL) fric_coeff = input->variable->compute_equal(muvar);
     modify->addstep_compute(update->ntimestep + 1);
   }
 
-
   // Call abrasion functions
+
   
   double **f = atom->f;
+  double **v = atom->v;
+
   double v_rel[3];
 	double x_rel[3];
+  double **x = atom->x;
 	double speed_of_approach;
   bool force_acting;
 
-  int local_index;
-  int no_of_neighs;
-  int neigh_index;
+
   //  NeighList *l = neighbor->lists[list_index];
   // std::cout << "inum: " << list->inum << std::endl;
   // std::cout << "nlocal: " << atom->nlocal << std::endl;
   //  for (int i = 0; i < list->inum; i++) {
-  for (int i = 0; i < atom->nlocal; i++) {
-    force_acting = MathExtra::len3(f[i]);
-    if (force_acting) {
-      local_index = list->ilist[i];
-      no_of_neighs = list->numneigh[i];
-      // std::cout << "atom: " << i << ", local index: " << local_index << ", numneigh: "
-		// << list->numneigh[i] << std::endl;
-      for (int j = 0; j < list->numneigh[i]; j++) {
-	neigh_index = list->firstneigh[i][j];
- 
 
- 
-  if (atom2body[neigh_index] == atom2body[local_index]){
-    continue;}
+  int inum = list->inum;
+  int *ilist = list->ilist;
+  int *numneigh = list->numneigh;
+  int ** firstneigh = list->firstneigh;
 
-  // A displacement occurs only if the objects are approaching each other.
-	if (gap_is_shrinking(local_index, neigh_index, v_rel, x_rel, &speed_of_approach)) {
-    displacement_of_atom(i, (atom->radius)[neigh_index], speed_of_approach, v_rel, x_rel);
-      	}
+  areas_and_normals();
+
+  // std::cout << "~ v of 1678" << " (" << v[1678][0] << ", " << v[1678][1] << ", " << v[1678][2] << ")" <<  std::endl;
+
+  // loop over central atoms in neighbor lists
+  for (int ii = 0; ii < inum; ii ++){
+ 
+  // get local index of central atom ii
+  int i = ilist[ii];
+
+  // only process abrasion for atoms in a body
+  if (atom2body[i] < 0) continue;
+
+  // check if force is acting on atom i
+  force_acting = MathExtra::len3(f[i]);
+  if (force_acting) {
+
+  // std::cout << "force acting on: " << i <<  std::endl;
+  // get number of neighbours for atom i
+  int jnum = numneigh[i];
+
+  // get list of local neighbor ids for atom i
+  int *jlist = firstneigh[i];
+
+  // cycle through neighbor list of i and calculate abrasion
+  for (int jj = 0; jj < jnum; jj++){
+    // get local index of neighbor to access its properties
+    int j = jlist[jj];
+    // std::cout << j << std::endl;
+
+    // check that the atoms are not in the same body
+
+    if (atom2body[i] != atom2body[j]){
+    // Check if the two atoms are approaching 
+    if (gap_is_shrinking(i, j, v_rel, x_rel, &speed_of_approach)) {
+
+
+    // Calculate the displacement on atom i from an impact by j
+    displacement_of_atom(i, j);
+          }
+        }
       }
+      
     }
   }
-  
-
 }
 
 
 /* ---------------------------------------------------------------------- */
+
 
 void FixRigidShell::areas_and_normals() {
 
@@ -1112,6 +1159,7 @@ void FixRigidShell::areas_and_normals() {
       n2 = -n2;
       n3 = -n3;
     }
+
     // Sub-edge 1
     se1[0] = displace[i1][0] - centroid[0];
     se1[1] = displace[i1][1] - centroid[1];
@@ -1187,9 +1235,26 @@ void FixRigidShell::areas_and_normals() {
       norm2 = vertexdata[i][1];
       norm3 = vertexdata[i][2];
       length = sqrt(norm1*norm1 + norm2*norm2 + norm3*norm3);
-      vertexdata[i][0] = norm1/length;
-      vertexdata[i][1] = norm2/length;
-      vertexdata[i][2] = norm3/length;
+
+
+
+      double normals[3];
+      normals[0] = norm1/length;
+      normals[1] = norm2/length;
+      normals[2] = norm3/length; 
+
+      double global_normals[3];
+
+      Body *b = &body[atom2body[i]];
+      MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,normals,global_normals);
+      
+      vertexdata[i][0] = global_normals[0];
+      vertexdata[i][1] = global_normals[1];
+      vertexdata[i][2] = global_normals[2];
+      
+        
+
+      
     } else {
       vertexdata[i][0] = 0.0;
       vertexdata[i][1] = 0.0;
@@ -1201,6 +1266,7 @@ void FixRigidShell::areas_and_normals() {
   }
 }
 
+
 /* ---------------------------------------------------------------------- */
 
 bool FixRigidShell::gap_is_shrinking(int i, int neigh_index,
@@ -1210,107 +1276,166 @@ bool FixRigidShell::gap_is_shrinking(int i, int neigh_index,
   double **v = atom->v;
   double **x = atom->x;
 
-  // std::cout << "neighbour vx, vy, vz: " << v[neigh_index][0] << ", " << v[neigh_index][1]
-	//     << ", " << v[neigh_index][2] << std::endl;
-
-  // std::cout << "neighbour x: " << x[neigh_index][0] << ", y: " << x[neigh_index][1]
-	//     << ", z: " << x[neigh_index][2] << std::endl;
-
-  v_rel[0] = v[neigh_index][0] - v[i][0];
+  v_rel[0] = v[neigh_index][0] - v[i][0]; // global coords
   v_rel[1] = v[neigh_index][1] - v[i][1];
   v_rel[2] = v[neigh_index][2] - v[i][2];
 
+  x_rel[0] = x[neigh_index][0] - x[i][0]; // global coords
+  x_rel[1] = x[neigh_index][1] - x[i][1];
+  x_rel[2] = x[neigh_index][2] - x[i][2];
+
   double normal[3];
   normal[0] = vertexdata[i][0];
-  normal[1] = vertexdata[i][1];
-  normal[2] = vertexdata[i][2];
+    normal[1] = vertexdata[i][1];
+      normal[2] = vertexdata[i][2];
+  // Body *b = &body[atom2body[i]];
+  // MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,vertexdata[i],normal); // convert normal to global coords
 
   *vnorm_p = MathExtra::dot3(v_rel, normal);
-  // std::cout << "vnorm = " << *vnorm_p
-	//     << ". vnorm < 0 indicates that the gap is shrinking." << std::endl;
 
+  int i_local = atom->map(i);
+  tagint *tag = atom->tag;
+  int i_global = tag[i];
+  std::cout << "Gap of " << i_global << " and " << tag[neigh_index] << " : " << *vnorm_p << std::endl;
+  std::cout << "dt: " << update->ntimestep << std::endl;
+  std::cout << "v of " << i_global << ": (" << v[i][0] << ", " << v[i][1] << ", " << v[i][2] << ") " << std::endl;
+  std::cout << "v of " << tag[neigh_index] << ": (" << v[neigh_index][0] << ", " << v[neigh_index][1] << ", " << v[neigh_index][2] << ") " << std::endl;
+  std::cout << "x of " << i_global << ": (" << x[i][0] << ", " << x[i][1] << ", " << x[i][2] << ") " << std::endl;
+  std::cout << "x of " << tag[neigh_index] << ": (" << x[neigh_index][0] << ", " << x[neigh_index][1] << ", " << x[neigh_index][2] << ") " << std::endl;
+  std::cout << "normal of " << i_global << ": (" << vertexdata[i][0] << ", " << vertexdata[i][1] << ", " << vertexdata[i][2] << ") " << std::endl;
+  std::cout << "normal of " << tag[neigh_index] << ": (" << vertexdata[neigh_index][0] << ", " << vertexdata[neigh_index][1] << ", " << vertexdata[neigh_index][2] << ") " << std::endl;
+  // std::cout << " " << std::endl;
   return *vnorm_p < 0;
 }
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidShell::displacement_of_atom(int i, double r,
-				       double vnorm,
-				       double v_rel[3], double x_rel[3]) {
+void FixRigidShell::displacement_of_atom(int i, int j) {
 
+  // Convert normals from body coordinates to global coordinates
+  double global_normals[3];
+  global_normals[0] = vertexdata[i][0];
+  global_normals[1] = vertexdata[i][1];
+  global_normals[2] = vertexdata[i][2];
 
-  // double pf = 10000000.0;                    // hardness
-  // double mu = 0.25;                          // a constant used to calculate the shear hardness
+  // double global_normals[3];
+  // Body *b = &body[atom2body[i]];
+  // MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,body_normals,global_normals);
+
+  // Storing area associated with atom i (equal in both body and global coords)
+  double associated_area = vertexdata[i][3];
+
+  // Accessing atom properties in global coords
   double **f = atom->f;
-  double normal[3];
-  normal[0] = vertexdata[i][0];
-  normal[1] = vertexdata[i][1];
-  normal[2] = vertexdata[i][2];
-  double area = vertexdata[i][3];
+  double **x = atom->x;
+  double **v = atom->v;
 
-  double normal_component_of_force =  MathExtra::dot3(normal, f[i]);
-  double tangential_force[3];
-  tangential_force[0] = f[i][0] - normal_component_of_force*normal[0];
-  tangential_force[1] = f[i][1] - normal_component_of_force*normal[1];
-  tangential_force[2] = f[i][2] - normal_component_of_force*normal[2];
-  double magnitude_of_tangential_force = MathExtra::len3(tangential_force);
-  double dt = update->dt;
+  // Calculating the effective radius of the two spheres
+  double r_eff = (atom->radius)[i] + (atom->radius)[j];
+  // std::cout << "r_eff" << r_eff << std::endl;
 
-  double separation_of_centres = MathExtra::dot3(x_rel, normal);
-  // std::cout << "separation of centres = " << separation_of_centres << std::endl;
+  // Calculating the scalar product of force on atom i and the normal to i
+  double fnorm = f[i][0]*global_normals[0] + f[i][1]*global_normals[1] + f[i][2]*global_normals[2];
 
-  // Effective radius.
-  double r_eff = r + (atom->radius)[i];
-  // std::cout << "r =  " << r << ", r_eff =" << r_eff << std::endl;
+  // Checking for indentation (is the normal force greater than the normal hardness * area associated with atom i)
+  bool indentation = abs(fnorm) > abs(hardness*associated_area);
 
-  // Overlap of spheres.
-  double h = r_eff - separation_of_centres;
-  // std::cout << "overlap = " << h << std::endl;
+  // Calculating the components of force on i tangential to i
+  double f_tan[3];
+  f_tan[0] = f[i][0] - fnorm * global_normals[0];
+  f_tan[1] = f[i][1] - fnorm * global_normals[1];
+  f_tan[2] = f[i][2] - fnorm * global_normals[2];
+
+  // Calculating magnitude of force tangential to i
+  double ftan = MathExtra::len3(f_tan);
+
+
+  // Checking for scratching (is the tangential force greater than the tangential hardness * area associated with atom i)
+  bool scratching = abs(ftan) > abs(hardness*fric_coeff*associated_area);
+
+  // Calculating the relative velocity and position of i and j in global coords
+  double x_rel[3];
+  x_rel[0] =  x[j][0] - x[i][0];
+  x_rel[1] =  x[j][1] - x[i][1];
+  x_rel[2] =  x[j][2] - x[i][2];
+
+  // Check that the atoms are in contact
+
+  if (MathExtra::len3(x_rel) > r_eff){
+    tagint *tag = atom->tag;
+    std::cout << "Atom " << tag[i] << " and " << tag[j] << " are not in contact and so will not be considered for abrasion." << std::endl;
+    return;
+  }
+
+  double v_rel[3];
+  v_rel[0] =  v[j][0] - v[i][0];
+  v_rel[1] =  v[j][1] - v[i][1];
+  v_rel[2] =  v[j][2] - v[i][2];
   
-  // Tangential velocity.
-  double normal_component_of_vel =  MathExtra::dot3(normal, v_rel);
+  // Calculating scalar product of particle velocity and the normal to i
+  double vnorm;
+  vnorm = v_rel[0]*global_normals[0] + v_rel[1]*global_normals[1] + v_rel[2]*global_normals[2];
+  
+  // Setting a flag to check this is > 0
+  bool e = vnorm < 0;
+
+  // Calculating the component of velocity normal to i
+  double v_norm[3];
+  v_norm[0] = vnorm * global_normals[0];
+  v_norm[1] = vnorm * global_normals[1];
+  v_norm[2] = vnorm * global_normals[2];
+
+  // Calculating the component of velocity tangential to i
   double v_tan[3];
-  v_tan[0] = v_rel[0] -  normal_component_of_vel*normal[0];
-  v_tan[1] = v_rel[1] -  normal_component_of_vel*normal[1];
-  v_tan[2] = v_rel[2] -  normal_component_of_vel*normal[2];
+  v_tan[0] = v_rel[0] - vnorm * global_normals[0];
+  v_tan[1] = v_rel[1] - vnorm * global_normals[1];
+  v_tan[2] = v_rel[2] - vnorm * global_normals[2];
 
-  // Tangential displacement.
-  double deltas = MathExtra::len3(v_tan)*dt;
+  // Calculating normal indentation depth
+  double deltah;
+  deltah = vnorm * update->dt;
 
-  double deltah = 0.0;
-  // std::cout << "normal_component_of_force = " << normal_component_of_force << std::endl;
-  // std::cout << "area*pf = " << area*pf << std::endl;
+  // Calculating tangential indentation depth
+  double deltas;
+  deltas = MathExtra::len3(v_tan) * update->dt;
 
-  // Check if theres indentation
-  bool iV = abs(normal_component_of_force) > area*pf;
+  // Per atom indetation depth
+  double htp;
+  htp = (x[i][0]*global_normals[0] + x[i][1]*global_normals[1] + x[i][2]*global_normals[2]) - (x[j][0]*global_normals[0] + x[j][1]*global_normals[1] + x[j][2]*global_normals[2] - r_eff);
+  // Calculate the normal displacement corresponding to deltas
+  double dsh;
+  dsh = htp - r_eff + sqrt(((r_eff - htp)*(r_eff - htp)) + 2*sqrt(abs(2*r_eff*htp - htp*htp)) * deltas);
+  // compare hl with old condition
+  bool hl = htp > 0;
 
-  if (iV) {
-    deltah = vnorm*dt;
-    // std::cout << "deltah = " << deltah << std::endl; 
-  }
+  // Calculate total normal displacement
+  double total_normal_displacement;
+  total_normal_displacement = (indentation * e * deltah) - (scratching * hl * dsh);
 
-  // This is the normal displacement corresponding to deltas.
-  double dsh = 0.0;
+  // total_normal_displacement = (indentation * deltah) - (scratching * hl * dsh);
 
-  // Check if theres scratching
-  bool iL = magnitude_of_tangential_force > area*mu*pf;
+  // Calculate the total displacement speed in global coordinates
+  double displacement_speed;
+  displacement_speed = (total_normal_displacement / update->dt);
 
-  bool overlapping = h > 0;
-  if (iL && overlapping) {
-    dsh = h-r_eff+sqrt((r_eff-h)*(r_eff-h) + 2*sqrt(abs(2*r_eff*h-h*h))*deltas);
-    // std::cout << "dsh = " << dsh << ", deltas = " << deltah << std::endl;
-  }
+  // Assign displacement velocities, alligned normally, to atom i in global coordinates
+  vertexdata[i][4] += displacement_speed * global_normals[0];
+  vertexdata[i][5] += displacement_speed * global_normals[1];
+  vertexdata[i][6] += displacement_speed * global_normals[2];
 
-  // Total normal displacement.
-  double total_normal_dispacement  = deltah - dsh;
-  // std::cout << "total_normal_dispacement = " << total_normal_dispacement << std::endl;
-  double displ_speed = total_normal_dispacement/dt;
-  vertexdata[i][4] += displ_speed*normal[0]; // x velocity for displacement
-  vertexdata[i][5] += displ_speed*normal[1]; // y velocity for displacement
-  vertexdata[i][6] += displ_speed*normal[2]; // z velocity for displacement
-  // std::cout << "vx: " << vertexdata[i][4] << std::endl;
-  // std::cout << "vy: " << vertexdata[i][5] << std::endl;
-  // std::cout << "vz: " << vertexdata[i][6] << std::endl;
+  tagint *tag = atom->tag;
+
+  std::cout << "Displacement of atom " << tag[i] << " by atom " << tag[j] << " at (" << update->ntimestep <<  ") : (" 
+  << displacement_speed * global_normals[0] << ", "
+   << displacement_speed * global_normals[1] << ", "
+    << displacement_speed * global_normals[2] << ") -> speed: " << displacement_speed << std::endl;
+    std::cout << " " <<std::endl;
+
+  std::cout << "Area considered = " << associated_area << std::endl;
+
+  std::cout << "Indentation: " << fnorm << " > " <<  abs(hardness*associated_area) << std::endl;
+  std::cout << "scratching: " << ftan << " > " <<  abs(hardness*fric_coeff*associated_area) << std::endl;
+
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1414,6 +1539,7 @@ void FixRigidShell::compute_forces_and_torques()
 
 void FixRigidShell::final_integrate()
 {
+  double stationary_flag = 0.0;
   double dtfm;
 
   //check(3);
@@ -1428,15 +1554,15 @@ void FixRigidShell::final_integrate()
     // update vcm by 1/2 step
 
     dtfm = dtf / b->mass;
-    b->vcm[0] += dtfm * b->fcm[0];
-    b->vcm[1] += dtfm * b->fcm[1];
-    b->vcm[2] += dtfm * b->fcm[2];
+    b->vcm[0] += dtfm * b->fcm[0] * stationary_flag;
+    b->vcm[1] += dtfm * b->fcm[1] * stationary_flag;
+    b->vcm[2] += dtfm * b->fcm[2] * stationary_flag;
 
     // update angular momentum by 1/2 step
 
-    b->angmom[0] += dtf * b->torque[0];
-    b->angmom[1] += dtf * b->torque[1];
-    b->angmom[2] += dtf * b->torque[2];
+    b->angmom[0] += dtf * b->torque[0] * stationary_flag;
+    b->angmom[1] += dtf * b->torque[1] * stationary_flag;
+    b->angmom[2] += dtf * b->torque[2] * stationary_flag;
 
     MathExtra::angmom_to_omega(b->angmom,b->ex_space,b->ey_space,
                                b->ez_space,b->inertia,b->omega);
@@ -1453,14 +1579,113 @@ void FixRigidShell::final_integrate()
   set_v();
 
     // Update displace array here to move atoms within the body
+    // Need to convert the displacement velocity into the reference frame of the the displace position
+    
+
+
+
     // integrate position over the displacement velocity by a full step
+  double **x = atom->x;
   int nlocal = atom->nlocal;
+  double global_displace_vel[3];
+  double body_displace_vel[3];
+  double global_normal[3];
+  double body_normal[3];
+  
+  
   for (int i = 0; i < nlocal; i++) {
     if (atom2body[i] < 0) continue;
-    displace[i][0] += dtv * vertexdata[i][4];
-    displace[i][1] += dtv * vertexdata[i][5];
-    displace[i][2] += dtv * vertexdata[i][6];
+    
+    global_displace_vel[0] = vertexdata[i][4]; // global coords
+    global_displace_vel[1] = vertexdata[i][5];
+    global_displace_vel[2] = vertexdata[i][6];
+    
+    body_normal[0] = vertexdata[i][0];
+    body_normal[1] = vertexdata[i][1];
+    body_normal[2] = vertexdata[i][2];
+
+    if (!MathExtra::len3(global_displace_vel)) continue;
+    
+    Body *b = &body[atom2body[i]];
+   
+    MathExtra::transpose_matvec(b->ex_space,b->ey_space,b->ez_space,
+                                global_displace_vel, body_displace_vel);
+
+    MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,body_normal,global_normal);
+
+
+    std::cout << "atom: " << i << " at: " << update->ntimestep << std::endl;
+    double len_global_normal = sqrt(global_normal[0]*global_normal[0] + global_normal[1]*global_normal[1] + global_normal[2]*global_normal[2]);
+    double len_body_normal = sqrt(body_normal[0]*body_normal[0] + body_normal[1]*body_normal[1] + body_normal[2]*body_normal[2]);
+    double len_global_displace = sqrt(global_displace_vel[0]*global_displace_vel[0] + global_displace_vel[1]*global_displace_vel[1] + global_displace_vel[2]*global_displace_vel[2]);
+    double len_body_displace = sqrt(body_displace_vel[0]*body_displace_vel[0] + body_displace_vel[1]*body_displace_vel[1] + body_displace_vel[2]*body_displace_vel[2]);
+
+
+    std::cout << "global normal: (" << global_normal[0] << ", " << global_normal[1] << ", " << global_normal[2] << ") " << std::endl;
+    std::cout << "body normal: (" << body_normal[0] << ", " << body_normal[1] << ", " <<body_normal[2] << ") " << std::endl;
+
+    std::cout << "global_displace: (" << global_displace_vel[0] << ", " << global_displace_vel[1] << ", " << global_displace_vel[2] << ") " << std::endl;
+    std::cout << "body_displace: (" << body_displace_vel[0] << ", " << body_displace_vel[1] << ", " << body_displace_vel[2] << ") " << std::endl << std::endl;
+
+
+
+    std::cout << "len_global normal: (" << len_global_normal<< ") " << std::endl;
+    std::cout << "len_body normal: (" << len_body_normal << ") " << std::endl;
+
+    std::cout << "len_global_displace: (" << len_global_displace << ") " << std::endl;
+    std::cout << "len_body_displace: (" << len_body_displace << std::endl << std::endl;
+
+
+    std::cout << "normalised_global normal: (" << global_normal[0]/len_global_normal << ", " << global_normal[1]/len_global_normal << ", " << global_normal[2]/len_global_normal << ") " << std::endl;
+    std::cout << "normalised_body normal: (" << body_normal[0]/len_body_normal << ", " << body_normal[1]/len_body_normal << ", " << body_normal[2]/len_body_normal << ") " << std::endl;
+
+    std::cout << "normalised_global_displace: (" << global_displace_vel[0]/len_global_displace << ", " << global_displace_vel[1]/len_global_displace << ", " << global_displace_vel[2]/len_global_displace << ") " << std::endl;
+    std::cout << "normalised_body_displace: (" << body_displace_vel[0]/len_body_displace << ", " << body_displace_vel[1]/len_body_displace << ", " << body_displace_vel[2]/len_body_displace << ") " << std::endl;
+    std::cout << "old_x: (" << x[i][0] << ", " << x[i][1] << ", " << x[i][2] << ")" << std::endl;
+
+    displace[i][0] += dtv * body_displace_vel[0];
+    displace[i][1] += dtv * body_displace_vel[1];
+    displace[i][2] += dtv * body_displace_vel[2];
+
+    int xbox,ybox,zbox;
+
+    double xprd = domain->xprd;
+    double yprd = domain->yprd;
+    double zprd = domain->zprd;
+
+    double xy = domain->xy;
+    double xz = domain->xz;
+    double yz = domain->yz;
+    xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
+    ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
+    zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
+
+
+    MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,displace[i],x[i]);
+
+
+    // add center of mass to displacement
+    // map back into periodic box via xbox,ybox,zbox
+    // for triclinic, add in box tilt factors as well
+
+    if (triclinic == 0) {
+      x[i][0] += b->xcm[0] - xbox*xprd;
+      x[i][1] += b->xcm[1] - ybox*yprd;
+      x[i][2] += b->xcm[2] - zbox*zprd;
+    } else {
+      x[i][0] += b->xcm[0] - xbox*xprd - ybox*xy - zbox*xz;
+      x[i][1] += b->xcm[1] - ybox*yprd - zbox*yz;
+      x[i][2] += b->xcm[2] - zbox*zprd;
   }
+   std::cout << "new_x: (" << x[i][0] << ", " << x[i][1] << ", " << x[i][2] << ")" << std::endl;
+
+   if(x[i][0] > 0.8){
+        std::cout << " ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~HASDKJLFHASDLKJFHASKLJDFHASDLKJFHASDKLJF" << std::endl;
+        std::cout << " ASDJKHFASJDHFASKDLJHFLKSAJDFHAKLSDJFHKSALDJFHLKSADJFHSAKJLDFH~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+   }
+    std::cout << " " << std::endl;
+        std::cout << " " << std::endl;
+}
 }
 
 /* ---------------------------------------------------------------------- */
@@ -2338,6 +2563,11 @@ void FixRigidShell::setup_bodies_static()
   commflag = FULL_BODY;
   comm->forward_comm(this);
   reset_atom2body();
+
+
+  // MAY HAVE TO MOVE THIS ONCE WE REPEATEDLY CALL SETUP_BODIES_STATIC TO RESET THE INERTIA 
+  memory->grow(angle2body,(neighbor->nanglelist),"rigid/shell:angle2body"); 
+
   reset_angle2body();
 
   // compute mass & center-of-mass of each rigid body
@@ -3183,11 +3413,12 @@ void FixRigidShell::grow_arrays(int nmax)
   memory->grow(bodyown,nmax,"rigid/shell:bodyown");
   memory->grow(bodytag,nmax,"rigid/shell:bodytag");
   memory->grow(atom2body,nmax,"rigid/shell:atom2body");
-  memory->grow(angle2body,(neighbor->nanglelist),"rigid/shell:angle2body"); 
-  // memory->grow(angle2body,(2*(nbody*nmax)-4*nbody),"rigid/shell:angle2body");  
+
+  memory->grow(vertexdata,nmax,size_peratom_cols,"rigid/shell:vertexdata");
+  array_atom = vertexdata;
+
   memory->grow(xcmimage,nmax,"rigid/shell:xcmimage");
   memory->grow(displace,nmax,3,"rigid/shell:displace");
-  memory->grow(vertexdata,nmax,7,"rigid/shell:vertexdata");
   if (extended) {
     memory->grow(eflags,nmax,"rigid/shell:eflags");
     if (orientflag) memory->grow(orient,nmax,orientflag,"rigid/shell:orient");
@@ -3272,6 +3503,8 @@ void FixRigidShell::set_arrays(int i)
   vertexdata[i][4] = 0.0;
   vertexdata[i][5] = 0.0;
   vertexdata[i][6] = 0.0;
+
+  imageint *image = atom->image;
 
   // must also zero vatom if per-atom virial calculated on this timestep
   // since vatom is calculated before and after atom migration
@@ -4142,6 +4375,8 @@ double FixRigidShell::memory_usage()
     if (dorientflag) bytes = (double)nmax*3 * sizeof(double);
   }
   bytes += (double)nmax_body * sizeof(Body);
+
+  bytes += atom->nmax*size_peratom_cols * sizeof(double); //~ For vertexdata array
   return bytes;
 }
 
