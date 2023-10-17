@@ -80,7 +80,8 @@ class FixRigidShell : public Fix {
   class NeighList *list;
   void areas_and_normals();
   bool gap_is_shrinking(int, int, double[3], double[3], double*);
-  void displacement_of_atom(int, double, double, double[3], double[3]);
+  void displacement_of_atom(int, int);
+  // void displacement_of_atom(int, double, double, double[3], double[3]);
   
 
  protected:
@@ -100,7 +101,7 @@ class FixRigidShell : public Fix {
   double maxextent;    // furthest distance from body owner to body atom
 
 
-  double pf, mu;       // hardness and friction coefficient
+  double hardness, fric_coeff;       // hardness and friction coefficient
   
   int varflag;
   int hstyle, mustyle;
@@ -193,6 +194,7 @@ class FixRigidShell : public Fix {
   int p_flag[3];
   int pcouple, pstyle;
   int p_chain;
+  
 
   int allremap;            // remap all atoms
   int dilate_group_bit;    // mask for dilation group
