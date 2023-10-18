@@ -1039,9 +1039,8 @@ void FixRigidShell::post_force(int /*vflag*/)
 
     // Calculate the displacement on atom i from an impact by j
     displacement_of_atom(i, j, x_rel, v_rel);
-                }
+        }
       }
-      
     }
   }
 }
