@@ -79,10 +79,8 @@ class FixRigidShell : public Fix {
   
   class NeighList *list;
   void areas_and_normals();
-  bool gap_is_shrinking(int, int, double[3], double[3], double*);
-  void displacement_of_atom(int, int);
-  // void displacement_of_atom(int, double, double, double[3], double[3]);
-  
+  void displacement_of_atom(int, int, double[3], double[3]);
+
 
  protected:
   int me, nprocs;
