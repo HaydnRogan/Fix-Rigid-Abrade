@@ -685,6 +685,7 @@ void FixRigidShell::setup_pre_neighbor()
     std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ THIS Calling build_topology() ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
     neighbor->build_topology();
     std::cout << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ : Calling setup_bodies_static() ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
+    memory->create(angle2body,(neighbor->nanglelist),"rigid/shell:angle2body"); 
     setup_bodies_static();
     areas_and_normals();
   }
@@ -815,7 +816,7 @@ void FixRigidShell::initial_integrate(int vflag)
 {
   
   double dtfm;
-  double stationary_flag = 0.0;
+  double stationary_flag = 1.0;
   //check(2);
 
   for (int ibody = 0; ibody < nlocal_body; ibody++) {
@@ -1296,14 +1297,14 @@ bool FixRigidShell::gap_is_shrinking(int i, int neigh_index,
   int i_local = atom->map(i);
   tagint *tag = atom->tag;
   int i_global = tag[i];
-  std::cout << "Gap of " << i_global << " and " << tag[neigh_index] << " : " << *vnorm_p << std::endl;
-  std::cout << "dt: " << update->ntimestep << std::endl;
-  std::cout << "v of " << i_global << ": (" << v[i][0] << ", " << v[i][1] << ", " << v[i][2] << ") " << std::endl;
-  std::cout << "v of " << tag[neigh_index] << ": (" << v[neigh_index][0] << ", " << v[neigh_index][1] << ", " << v[neigh_index][2] << ") " << std::endl;
-  std::cout << "x of " << i_global << ": (" << x[i][0] << ", " << x[i][1] << ", " << x[i][2] << ") " << std::endl;
-  std::cout << "x of " << tag[neigh_index] << ": (" << x[neigh_index][0] << ", " << x[neigh_index][1] << ", " << x[neigh_index][2] << ") " << std::endl;
-  std::cout << "normal of " << i_global << ": (" << vertexdata[i][0] << ", " << vertexdata[i][1] << ", " << vertexdata[i][2] << ") " << std::endl;
-  std::cout << "normal of " << tag[neigh_index] << ": (" << vertexdata[neigh_index][0] << ", " << vertexdata[neigh_index][1] << ", " << vertexdata[neigh_index][2] << ") " << std::endl;
+  // std::cout << "Gap of " << i_global << " and " << tag[neigh_index] << " : " << *vnorm_p << std::endl;
+  // std::cout << "dt: " << update->ntimestep << std::endl;
+  // std::cout << "v of " << i_global << ": (" << v[i][0] << ", " << v[i][1] << ", " << v[i][2] << ") " << std::endl;
+  // std::cout << "v of " << tag[neigh_index] << ": (" << v[neigh_index][0] << ", " << v[neigh_index][1] << ", " << v[neigh_index][2] << ") " << std::endl;
+  // std::cout << "x of " << i_global << ": (" << x[i][0] << ", " << x[i][1] << ", " << x[i][2] << ") " << std::endl;
+  // std::cout << "x of " << tag[neigh_index] << ": (" << x[neigh_index][0] << ", " << x[neigh_index][1] << ", " << x[neigh_index][2] << ") " << std::endl;
+  // std::cout << "normal of " << i_global << ": (" << vertexdata[i][0] << ", " << vertexdata[i][1] << ", " << vertexdata[i][2] << ") " << std::endl;
+  // std::cout << "normal of " << tag[neigh_index] << ": (" << vertexdata[neigh_index][0] << ", " << vertexdata[neigh_index][1] << ", " << vertexdata[neigh_index][2] << ") " << std::endl;
   // std::cout << " " << std::endl;
   return *vnorm_p < 0;
 }
@@ -1362,8 +1363,10 @@ void FixRigidShell::displacement_of_atom(int i, int j) {
   // Check that the atoms are in contact
 
   if (MathExtra::len3(x_rel) > r_eff){
+    
     tagint *tag = atom->tag;
     std::cout << "Atom " << tag[i] << " and " << tag[j] << " are not in contact and so will not be considered for abrasion." << std::endl;
+    
     return;
   }
 
@@ -1425,16 +1428,16 @@ void FixRigidShell::displacement_of_atom(int i, int j) {
 
   tagint *tag = atom->tag;
 
-  std::cout << "Displacement of atom " << tag[i] << " by atom " << tag[j] << " at (" << update->ntimestep <<  ") : (" 
-  << displacement_speed * global_normals[0] << ", "
-   << displacement_speed * global_normals[1] << ", "
-    << displacement_speed * global_normals[2] << ") -> speed: " << displacement_speed << std::endl;
-    std::cout << " " <<std::endl;
+  // std::cout << "Displacement of atom " << tag[i] << " by atom " << tag[j] << " at (" << update->ntimestep <<  ") : (" 
+  // << displacement_speed * global_normals[0] << ", "
+  //  << displacement_speed * global_normals[1] << ", "
+  //   << displacement_speed * global_normals[2] << ") -> speed: " << displacement_speed << std::endl;
+  //   std::cout << " " <<std::endl;
 
-  std::cout << "Area considered = " << associated_area << std::endl;
+  // std::cout << "Area considered = " << associated_area << std::endl;
 
-  std::cout << "Indentation: " << fnorm << " > " <<  abs(hardness*associated_area) << std::endl;
-  std::cout << "scratching: " << ftan << " > " <<  abs(hardness*fric_coeff*associated_area) << std::endl;
+  // std::cout << "Indentation: " << fnorm << " > " <<  abs(hardness*associated_area) << std::endl;
+  // std::cout << "scratching: " << ftan << " > " <<  abs(hardness*fric_coeff*associated_area) << std::endl;
 
 }
 
@@ -1539,7 +1542,7 @@ void FixRigidShell::compute_forces_and_torques()
 
 void FixRigidShell::final_integrate()
 {
-  double stationary_flag = 0.0;
+  double stationary_flag = 1.0;
   double dtfm;
 
   //check(3);
@@ -1614,34 +1617,34 @@ void FixRigidShell::final_integrate()
     MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,body_normal,global_normal);
 
 
-    std::cout << "atom: " << i << " at: " << update->ntimestep << std::endl;
-    double len_global_normal = sqrt(global_normal[0]*global_normal[0] + global_normal[1]*global_normal[1] + global_normal[2]*global_normal[2]);
-    double len_body_normal = sqrt(body_normal[0]*body_normal[0] + body_normal[1]*body_normal[1] + body_normal[2]*body_normal[2]);
-    double len_global_displace = sqrt(global_displace_vel[0]*global_displace_vel[0] + global_displace_vel[1]*global_displace_vel[1] + global_displace_vel[2]*global_displace_vel[2]);
-    double len_body_displace = sqrt(body_displace_vel[0]*body_displace_vel[0] + body_displace_vel[1]*body_displace_vel[1] + body_displace_vel[2]*body_displace_vel[2]);
+    // std::cout << "atom: " << i << " at: " << update->ntimestep << std::endl;
+    // double len_global_normal = sqrt(global_normal[0]*global_normal[0] + global_normal[1]*global_normal[1] + global_normal[2]*global_normal[2]);
+    // double len_body_normal = sqrt(body_normal[0]*body_normal[0] + body_normal[1]*body_normal[1] + body_normal[2]*body_normal[2]);
+    // double len_global_displace = sqrt(global_displace_vel[0]*global_displace_vel[0] + global_displace_vel[1]*global_displace_vel[1] + global_displace_vel[2]*global_displace_vel[2]);
+    // double len_body_displace = sqrt(body_displace_vel[0]*body_displace_vel[0] + body_displace_vel[1]*body_displace_vel[1] + body_displace_vel[2]*body_displace_vel[2]);
 
 
-    std::cout << "global normal: (" << global_normal[0] << ", " << global_normal[1] << ", " << global_normal[2] << ") " << std::endl;
-    std::cout << "body normal: (" << body_normal[0] << ", " << body_normal[1] << ", " <<body_normal[2] << ") " << std::endl;
+    // std::cout << "global normal: (" << global_normal[0] << ", " << global_normal[1] << ", " << global_normal[2] << ") " << std::endl;
+    // std::cout << "body normal: (" << body_normal[0] << ", " << body_normal[1] << ", " <<body_normal[2] << ") " << std::endl;
 
-    std::cout << "global_displace: (" << global_displace_vel[0] << ", " << global_displace_vel[1] << ", " << global_displace_vel[2] << ") " << std::endl;
-    std::cout << "body_displace: (" << body_displace_vel[0] << ", " << body_displace_vel[1] << ", " << body_displace_vel[2] << ") " << std::endl << std::endl;
-
-
-
-    std::cout << "len_global normal: (" << len_global_normal<< ") " << std::endl;
-    std::cout << "len_body normal: (" << len_body_normal << ") " << std::endl;
-
-    std::cout << "len_global_displace: (" << len_global_displace << ") " << std::endl;
-    std::cout << "len_body_displace: (" << len_body_displace << std::endl << std::endl;
+    // std::cout << "global_displace: (" << global_displace_vel[0] << ", " << global_displace_vel[1] << ", " << global_displace_vel[2] << ") " << std::endl;
+    // std::cout << "body_displace: (" << body_displace_vel[0] << ", " << body_displace_vel[1] << ", " << body_displace_vel[2] << ") " << std::endl << std::endl;
 
 
-    std::cout << "normalised_global normal: (" << global_normal[0]/len_global_normal << ", " << global_normal[1]/len_global_normal << ", " << global_normal[2]/len_global_normal << ") " << std::endl;
-    std::cout << "normalised_body normal: (" << body_normal[0]/len_body_normal << ", " << body_normal[1]/len_body_normal << ", " << body_normal[2]/len_body_normal << ") " << std::endl;
 
-    std::cout << "normalised_global_displace: (" << global_displace_vel[0]/len_global_displace << ", " << global_displace_vel[1]/len_global_displace << ", " << global_displace_vel[2]/len_global_displace << ") " << std::endl;
-    std::cout << "normalised_body_displace: (" << body_displace_vel[0]/len_body_displace << ", " << body_displace_vel[1]/len_body_displace << ", " << body_displace_vel[2]/len_body_displace << ") " << std::endl;
-    std::cout << "old_x: (" << x[i][0] << ", " << x[i][1] << ", " << x[i][2] << ")" << std::endl;
+    // std::cout << "len_global normal: (" << len_global_normal<< ") " << std::endl;
+    // std::cout << "len_body normal: (" << len_body_normal << ") " << std::endl;
+
+    // std::cout << "len_global_displace: (" << len_global_displace << ") " << std::endl;
+    // std::cout << "len_body_displace: (" << len_body_displace << std::endl << std::endl;
+
+
+    // std::cout << "normalised_global normal: (" << global_normal[0]/len_global_normal << ", " << global_normal[1]/len_global_normal << ", " << global_normal[2]/len_global_normal << ") " << std::endl;
+    // std::cout << "normalised_body normal: (" << body_normal[0]/len_body_normal << ", " << body_normal[1]/len_body_normal << ", " << body_normal[2]/len_body_normal << ") " << std::endl;
+
+    // std::cout << "normalised_global_displace: (" << global_displace_vel[0]/len_global_displace << ", " << global_displace_vel[1]/len_global_displace << ", " << global_displace_vel[2]/len_global_displace << ") " << std::endl;
+    // std::cout << "normalised_body_displace: (" << body_displace_vel[0]/len_body_displace << ", " << body_displace_vel[1]/len_body_displace << ", " << body_displace_vel[2]/len_body_displace << ") " << std::endl;
+    // std::cout << "old_x: (" << x[i][0] << ", " << x[i][1] << ", " << x[i][2] << ")" << std::endl;
 
     displace[i][0] += dtv * body_displace_vel[0];
     displace[i][1] += dtv * body_displace_vel[1];
@@ -1677,14 +1680,6 @@ void FixRigidShell::final_integrate()
       x[i][1] += b->xcm[1] - ybox*yprd - zbox*yz;
       x[i][2] += b->xcm[2] - zbox*zprd;
   }
-   std::cout << "new_x: (" << x[i][0] << ", " << x[i][1] << ", " << x[i][2] << ")" << std::endl;
-
-   if(x[i][0] > 0.8){
-        std::cout << " ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~HASDKJLFHASDLKJFHASKLJDFHASDLKJFHASDKLJF" << std::endl;
-        std::cout << " ASDJKHFASJDHFASKDLJHFLKSAJDFHAKLSDJFHKSALDJFHLKSADJFHSAKJLDFH~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
-   }
-    std::cout << " " << std::endl;
-        std::cout << " " << std::endl;
 }
 }
 
@@ -2563,11 +2558,6 @@ void FixRigidShell::setup_bodies_static()
   commflag = FULL_BODY;
   comm->forward_comm(this);
   reset_atom2body();
-
-
-  // MAY HAVE TO MOVE THIS ONCE WE REPEATEDLY CALL SETUP_BODIES_STATIC TO RESET THE INERTIA 
-  memory->grow(angle2body,(neighbor->nanglelist),"rigid/shell:angle2body"); 
-
   reset_angle2body();
 
   // compute mass & center-of-mass of each rigid body
@@ -3413,7 +3403,7 @@ void FixRigidShell::grow_arrays(int nmax)
   memory->grow(bodyown,nmax,"rigid/shell:bodyown");
   memory->grow(bodytag,nmax,"rigid/shell:bodytag");
   memory->grow(atom2body,nmax,"rigid/shell:atom2body");
-
+  memory->grow(angle2body,(neighbor->nanglelist),"rigid/shell:angle2body"); 
   memory->grow(vertexdata,nmax,size_peratom_cols,"rigid/shell:vertexdata");
   array_atom = vertexdata;
 
@@ -3447,6 +3437,9 @@ void FixRigidShell::copy_arrays(int i, int j, int delflag)
   displace[j][0] = displace[i][0];
   displace[j][1] = displace[i][1];
   displace[j][2] = displace[i][2];
+
+  for (int q = 0; q < size_peratom_cols; q++)
+    vertexdata[j][q] = vertexdata[i][q];
 
   if (extended) {
     eflags[j] = eflags[i];
@@ -3621,9 +3614,12 @@ int FixRigidShell::pack_exchange(int i, double *buf)
   buf[3] = displace[i][1];
   buf[4] = displace[i][2];
 
-  // extended attribute info
 
-  int m = 5;
+  for (int q = 0; q < size_peratom_cols; q++)
+  buf[5+q] = vertexdata[i][q];
+
+  // extended attribute info
+  int m = 5 + size_peratom_cols;
   if (extended) {
     buf[m++] = eflags[i];
     for (int j = 0; j < orientflag; j++)
@@ -3673,9 +3669,12 @@ int FixRigidShell::unpack_exchange(int nlocal, double *buf)
   displace[nlocal][1] = buf[3];
   displace[nlocal][2] = buf[4];
 
+  for (int q = 0; q < size_peratom_cols; q++)
+  vertexdata[nlocal][q] = buf[5+q];
+
   // extended attribute info
 
-  int m = 5;
+  int m = 5 + size_peratom_cols;
   if (extended) {
     eflags[nlocal] = static_cast<int> (buf[m++]);
     for (int j = 0; j < orientflag; j++)
@@ -3808,6 +3807,17 @@ int FixRigidShell::pack_forward_comm(int n, int *list, double *buf,
     }
   }
 
+  for (i = 0; i < n; i++) {
+      j = list[i];
+      buf[m++] = vertexdata[j][0];
+      buf[m++] = vertexdata[j][1];
+      buf[m++] = vertexdata[j][2];
+      buf[m++] = vertexdata[j][3];
+      buf[m++] = vertexdata[j][4];
+      buf[m++] = vertexdata[j][5];
+      buf[m++] = vertexdata[j][6];
+  }
+
   return m;
 }
 
@@ -3900,6 +3910,15 @@ void FixRigidShell::unpack_forward_comm(int n, int first, double *buf)
         nghost_body++;
       }
     }
+  }
+  for (i = first; i < last; i++) {
+     vertexdata[i][0] = buf[m++];
+     vertexdata[i][1] = buf[m++];
+     vertexdata[i][2] = buf[m++];
+     vertexdata[i][3] = buf[m++];
+     vertexdata[i][4] = buf[m++];
+     vertexdata[i][5] = buf[m++];
+     vertexdata[i][6] = buf[m++];
   }
 }
 
