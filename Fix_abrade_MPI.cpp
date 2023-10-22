@@ -1916,6 +1916,7 @@ void FixRigidAbrade::setup_bodies_static()
     xcm[0] = xcm[1] = xcm[2] = 0.0;
     xgc[0] = xgc[1] = xgc[2] = 0.0;
     body[ibody].mass = 0.0;
+    body[ibody].volume = 0.0;
     body[ibody].natoms = 0;
   }
 
@@ -1957,6 +1958,9 @@ void FixRigidAbrade::setup_bodies_static()
     for (int i = 0; i < 3; i++){
         // check if it is a ghost atom
         if (anglelist[n][i] >= nlocal){
+
+              if ((anglelist[n][(i+1)%3] >= nlocal) && (anglelist[n][(i+2)%3] >= nlocal)) error->all(FLERR, "No atoms are local");
+
         // Check if it exists for the other atoms in the angle and set its value
         for (int j = 1; j < 3; j++){
           if (anglelist[n][(i+j)%3] < nlocal) {
@@ -1971,7 +1975,6 @@ void FixRigidAbrade::setup_bodies_static()
       }
 
     }
-      
       // check if all atoms in the angle think they belong to the same body
       if (!((atom2body[anglelist[n][0]] == atom2body[anglelist[n][1]]) && (atom2body[anglelist[n][0]] == atom2body[anglelist[n][2]]))){
      std::cout << me << ": (nlocal, nghost) (" << atom->nlocal << "," << (atom->nghost + atom->nlocal) << ")" << std::endl;
@@ -2008,9 +2011,14 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
   commflag = XCM_MASS;
   comm->reverse_comm(this,9);
 
-
+  std::cout << nlocal_body << " bodies owned by proc " << me << " ----------------------" << std::endl;
   for (ibody = 0; ibody < nlocal_body; ibody++) {
-    std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << std::endl;
+    if ((std::ceil(body[ibody].volume * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].volume * 1000.0) / 1000.0)) {std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << std::endl;}
+  // std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << std::endl;
+
+
+
+
 }
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
