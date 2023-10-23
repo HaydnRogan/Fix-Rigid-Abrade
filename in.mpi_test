@@ -21,7 +21,7 @@ angle_style	zero
 angle_style	zero
 angle_coeff	* 75.0
 
-molecule target cube_new_no_bonds.mol
+molecule target particle_no_bonds.mol
 
 # Pre-fix settings ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 neighbor	0.15 bin
