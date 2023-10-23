@@ -1,0 +1,47 @@
+###############################################
+# Initialisation
+###############################################
+units           cgs # This means cm, g, s for base units.
+boundary        p p p
+atom_style      hybrid molecular sphere
+#atom-ID atom-type diameter density x y z
+dimension       3
+newton          on
+atom_modify     map array
+###############################################
+# Geometry-related parameters
+###############################################
+region boundingBox block -5 5 -5 5 -5 5 units box
+create_box 2 boundingBox angle/types 1 extra/angle/per/atom 10
+###############################################
+# Particle-related parameters
+###############################################
+
+angle_style	zero
+angle_style	zero
+angle_coeff	* 75.0
+
+molecule target cube_new_no_bonds.mol
+
+# Pre-fix settings ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+neighbor	0.15 bin
+neigh_modify    delay 0 every 1 exclude type 1 1
+neigh_modify	delay 0 every 1 check yes
+comm_modify	mode single cutoff 5 vel yes
+​compute t1 all temp/sphere
+# comm_modify cutoff 20
+thermo_modify temp t1
+
+pair_style gran/hertz/history 5.e11 9.e11 0.0000001 0.0000001 0.5 0
+pair_coeff * *
+timestep     5.0e-6
+
+create_atoms 1 random 100 1729871 boundingBox mol target 1729871 overlap 0.5
+
+neigh_modify exclude molecule/intra all
+
+fix abrade all rigid/abrade molecule
+
+dump 1 all custom 1 dump.output id x y z radius vx mass
+
+run 1
