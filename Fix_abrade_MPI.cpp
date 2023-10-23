@@ -1951,15 +1951,15 @@ void FixRigidAbrade::setup_bodies_static()
   
 
 
-// Cycle through all angles and assign atom2body and xcmimage to ghost atoms
+
+// Cycle through all angles and assign atom2body and xcmimage to their ghost atoms
   for (int n=0; n<nanglelist; n++){  
 
   // Cycle through atoms in angle
     for (int i = 0; i < 3; i++){
-        // check if it is a ghost atom
+        
+        // Check if i is a ghost atom
         if (anglelist[n][i] >= nlocal){
-
-              if ((anglelist[n][(i+1)%3] >= nlocal) && (anglelist[n][(i+2)%3] >= nlocal)) error->all(FLERR, "No atoms are local");
 
         // Check if it exists for the other atoms in the angle and set its value
         for (int j = 1; j < 3; j++){
@@ -1969,19 +1969,13 @@ void FixRigidAbrade::setup_bodies_static()
             }
           }
         }
-            // check if all atoms have a xcm
-      if (!xcmimage[anglelist[n][i]]){
-        std::cout << me << ": xcmimage not assigned for " << anglelist[n][i] << std::endl;
-      }
-
+      // Check if all angle atoms have a xcm
+      if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
     }
-      // check if all atoms in the angle think they belong to the same body
-      if (!((atom2body[anglelist[n][0]] == atom2body[anglelist[n][1]]) && (atom2body[anglelist[n][0]] == atom2body[anglelist[n][2]]))){
-     std::cout << me << ": (nlocal, nghost) (" << atom->nlocal << "," << (atom->nghost + atom->nlocal) << ")" << std::endl;
-     std::cout << "atoms (" << anglelist[n][0] << ", " << anglelist[n][1] << ", " << anglelist[n][2] << ")  in bodies ("<< atom2body[anglelist[n][0]] << ", " << atom2body[anglelist[n][1]] << ", " << atom2body[anglelist[n][2]] <<  std::endl;
-      }
-
-
+     
+      // Check if all atoms in the angle think they belong to the same body
+      if (!((atom2body[anglelist[n][0]] == atom2body[anglelist[n][1]]) && (atom2body[anglelist[n][0]] == atom2body[anglelist[n][2]])))
+      error->all(FLERR, "atom2body not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
   }
 
 
@@ -2011,14 +2005,10 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
   commflag = XCM_MASS;
   comm->reverse_comm(this,9);
 
-  std::cout << nlocal_body << " bodies owned by proc " << me << " ----------------------" << std::endl;
+  std::cout << " ---------------------- " << nlocal_body << " bodies owned by proc " << me << " ---------------------- "  << std::endl;
+  
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     if ((std::ceil(body[ibody].volume * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].volume * 1000.0) / 1000.0)) {std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << std::endl;}
-  // std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << std::endl;
-
-
-
-
 }
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
