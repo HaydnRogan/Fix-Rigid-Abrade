@@ -1917,28 +1917,21 @@ void FixRigidAbrade::setup_bodies_static()
     xgc[0] = xgc[1] = xgc[2] = 0.0;
     body[ibody].mass = 0.0;
     body[ibody].volume = 0.0;
+    body[ibody].density = 0.0;
     body[ibody].natoms = 0;
   }
 
   double unwrap[3];
   double massone;
 
+// Cycling through the local atoms and summing their mass to the respective body
   for (i = 0; i < nlocal; i++) {
     if (atom2body[i] < 0) continue;
     Body *b = &body[atom2body[i]];
-
     if (rmass) massone = rmass[i];
     else massone = mass[type[i]];
 
-    domain->unmap(x[i],xcmimage[i],unwrap);
-    xcm = b->xcm;
-    xgc = b->xgc;
-    xcm[0] += unwrap[0] * massone;
-    xcm[1] += unwrap[1] * massone;
-    xcm[2] += unwrap[2] * massone;
-    xgc[0] += unwrap[0];
-    xgc[1] += unwrap[1];
-    xgc[2] += unwrap[2];
+    // Still using the masses of the surface atoms to define the body mass - Eventually update to be calculated from the tetrahedra volumes and particle density
     b->mass += massone;
     b->natoms++;
   }
@@ -1949,9 +1942,6 @@ void FixRigidAbrade::setup_bodies_static()
   
   int i1, i2, i3;
   
-
-
-
 // Cycle through all angles and assign atom2body and xcmimage to their ghost atoms
   for (int n=0; n<nanglelist; n++){  
 
@@ -1972,7 +1962,7 @@ void FixRigidAbrade::setup_bodies_static()
       // Check if all angle atoms have a xcm
       if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
     }
-     
+
       // Check if all atoms in the angle think they belong to the same body
       if (!((atom2body[anglelist[n][0]] == atom2body[anglelist[n][1]]) && (atom2body[anglelist[n][0]] == atom2body[anglelist[n][2]])))
       error->all(FLERR, "atom2body not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
@@ -1992,8 +1982,17 @@ void FixRigidAbrade::setup_bodies_static()
       domain->unmap(x[i1],xcmimage[i1],unwrap1);
       domain->unmap(x[i2],xcmimage[i2],unwrap2);
       domain->unmap(x[i3],xcmimage[i3],unwrap3);
-
+      
+      xcm = b->xcm;
+      xgc = b->xgc;
+      
       b->volume += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *((unwrap1[0]+unwrap2[0]) + unwrap3[0]))/6.0;
+      xcm[0] += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *(((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0])))/24.0;
+      xcm[1] += ((((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) *(((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1])))/24.0;
+      xcm[2] += ((((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) *(((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2])))/24.0;
+      xgc[0] += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *(((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0])))/24.0;
+      xgc[1] += ((((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) *(((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1])))/24.0;
+      xgc[2] += ((((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) *(((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2])))/24.0;
     }
 
   // reverse communicate xcm, mass of all bodies
@@ -2003,7 +2002,7 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
 }
   
   commflag = XCM_MASS;
-  comm->reverse_comm(this,9);
+  comm->reverse_comm(this,10);
 
   std::cout << " ---------------------- " << nlocal_body << " bodies owned by proc " << me << " ---------------------- "  << std::endl;
   
@@ -2014,12 +2013,15 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     xcm = body[ibody].xcm;
     xgc = body[ibody].xgc;
-    xcm[0] /= body[ibody].mass;
-    xcm[1] /= body[ibody].mass;
-    xcm[2] /= body[ibody].mass;
-    xgc[0] /= body[ibody].natoms;
-    xgc[1] /= body[ibody].natoms;
-    xgc[2] /= body[ibody].natoms;
+
+    // Setting each bodies' density and COM
+    body[ibody].density = body[ibody].mass/body[ibody].volume;
+    xcm[0] /= body[ibody].volume;
+    xcm[1] /= body[ibody].volume;
+    xcm[2] /= body[ibody].volume;
+    xgc[0] /= body[ibody].volume;
+    xgc[1] /= body[ibody].volume;
+    xgc[2] /= body[ibody].volume;
   }
 
   // set vcm, angmom = 0.0 in case inpfile is used
@@ -2072,79 +2074,79 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
   double dx,dy,dz;
   double *inertia;
 
-  for (i = 0; i < nlocal; i++) {
-    if (atom2body[i] < 0) continue;
-    Body *b = &body[atom2body[i]];
+    for (int n = 0; n < nanglelist; n++) {
+      if (atom2body[anglelist[n][0]] < 0) continue;
+      Body *b = &body[atom2body[anglelist[n][0]]];
+    
+      // Storing the three atoms in each angle
+      i1 = anglelist[n][0];
+      i2 = anglelist[n][1];
+      i3 = anglelist[n][2];
 
-    domain->unmap(x[i],xcmimage[i],unwrap);
-    xcm = b->xcm;
-    dx = unwrap[0] - xcm[0];
-    dy = unwrap[1] - xcm[1];
-    dz = unwrap[2] - xcm[2];
+      domain->unmap(x[i1],xcmimage[i1],unwrap1);
+      domain->unmap(x[i2],xcmimage[i2],unwrap2);
+      domain->unmap(x[i3],xcmimage[i3],unwrap3);
 
-    if (rmass) massone = rmass[i];
-    else massone = mass[type[i]];
-
-    inertia = itensor[atom2body[i]];
-    inertia[0] += massone * (dy*dy + dz*dz);
-    inertia[1] += massone * (dx*dx + dz*dz);
-    inertia[2] += massone * (dx*dx + dy*dy);
-    inertia[3] -= massone * dy*dz;
-    inertia[4] -= massone * dx*dz;
-    inertia[5] -= massone * dx*dy;
-  }
+      inertia = itensor[atom2body[anglelist[n][0]]];
+      inertia[0] += (((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *(unwrap1[0]*(unwrap1[0]*unwrap1[0])+unwrap2[0]*((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*(((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0])));
+      inertia[1] += (((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) *(unwrap1[1]*(unwrap1[1]*unwrap1[1])+unwrap2[1]*((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*(((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1])));
+      inertia[2] += (((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) *(unwrap1[2]*(unwrap1[2]*unwrap1[2])+unwrap2[2]*((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*(((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2])));
+      inertia[3] += (((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) * (unwrap1[1]*((((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0]))+unwrap1[0]*(((unwrap1[0]+unwrap2[0]) + unwrap3[0])+unwrap1[0]))+unwrap2[1]*((((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0]))+unwrap2[0]*(((unwrap1[0]+unwrap2[0]) + unwrap3[0])+unwrap2[0]))+unwrap3[1]*((((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0]))+unwrap3[0]*(((unwrap1[0]+unwrap2[0]) + unwrap3[0])+unwrap3[0])));
+      inertia[4] += (((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) * (unwrap1[2]*((((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1]))+unwrap1[1]*(((unwrap1[1]+unwrap2[1]) + unwrap3[1])+unwrap1[1]))+unwrap2[2]*((((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1]))+unwrap2[1]*(((unwrap1[1]+unwrap2[1]) + unwrap3[1])+unwrap2[1]))+unwrap3[2]*((((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1]))+unwrap3[1]*(((unwrap1[1]+unwrap2[1]) + unwrap3[1])+unwrap3[1])));
+      inertia[5] += (((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) * (unwrap1[0]*((((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2]))+unwrap1[2]*(((unwrap1[2]+unwrap2[2]) + unwrap3[2])+unwrap1[2]))+unwrap2[0]*((((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2]))+unwrap2[2]*(((unwrap1[2]+unwrap2[2]) + unwrap3[2])+unwrap2[2]))+unwrap3[0]*((((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2]))+unwrap3[2]*(((unwrap1[2]+unwrap2[2]) + unwrap3[2])+unwrap3[2])));
+    }
 
   // extended particles may contribute extra terms to moments of inertia
 
-  if (extended) {
-    double ivec[6];
-    double *shape,*quatatom,*inertiaatom;
-    double length,theta;
+  // if (extended) {
+  //   double ivec[6];
+  //   double *shape,*quatatom,*inertiaatom;
+  //   double length,theta;
 
-    for (i = 0; i < nlocal; i++) {
-      if (atom2body[i] < 0) continue;
-      inertia = itensor[atom2body[i]];
+  //   for (i = 0; i < nlocal; i++) {
+  //     if (atom2body[i] < 0) continue;
+  //     inertia = itensor[atom2body[i]];
 
-      if (rmass) massone = rmass[i];
-      else massone = mass[type[i]];
+  //     if (rmass) massone = rmass[i];
+  //     else massone = mass[type[i]];
 
-      if (eflags[i] & SPHERE) {
-        inertia[0] += SINERTIA*massone * radius[i]*radius[i];
-        inertia[1] += SINERTIA*massone * radius[i]*radius[i];
-        inertia[2] += SINERTIA*massone * radius[i]*radius[i];
-      } else if (eflags[i] & ELLIPSOID) {
-        shape = ebonus[ellipsoid[i]].shape;
-        quatatom = ebonus[ellipsoid[i]].quat;
-        MathExtra::inertia_ellipsoid(shape,quatatom,massone,ivec);
-        inertia[0] += ivec[0];
-        inertia[1] += ivec[1];
-        inertia[2] += ivec[2];
-        inertia[3] += ivec[3];
-        inertia[4] += ivec[4];
-        inertia[5] += ivec[5];
-      } else if (eflags[i] & LINE) {
-        length = lbonus[line[i]].length;
-        theta = lbonus[line[i]].theta;
-        MathExtra::inertia_line(length,theta,massone,ivec);
-        inertia[0] += ivec[0];
-        inertia[1] += ivec[1];
-        inertia[2] += ivec[2];
-        inertia[3] += ivec[3];
-        inertia[4] += ivec[4];
-        inertia[5] += ivec[5];
-      } else if (eflags[i] & TRIANGLE) {
-        inertiaatom = tbonus[tri[i]].inertia;
-        quatatom = tbonus[tri[i]].quat;
-        MathExtra::inertia_triangle(inertiaatom,quatatom,massone,ivec);
-        inertia[0] += ivec[0];
-        inertia[1] += ivec[1];
-        inertia[2] += ivec[2];
-        inertia[3] += ivec[3];
-        inertia[4] += ivec[4];
-        inertia[5] += ivec[5];
-      }
-    }
-  }
+  //     if (eflags[i] & SPHERE) {
+  //       inertia[0] += SINERTIA*massone * radius[i]*radius[i];
+  //       inertia[1] += SINERTIA*massone * radius[i]*radius[i];
+  //       inertia[2] += SINERTIA*massone * radius[i]*radius[i];
+  //     } else if (eflags[i] & ELLIPSOID) {
+  //       shape = ebonus[ellipsoid[i]].shape;
+  //       quatatom = ebonus[ellipsoid[i]].quat;
+  //       MathExtra::inertia_ellipsoid(shape,quatatom,massone,ivec);
+  //       inertia[0] += ivec[0];
+  //       inertia[1] += ivec[1];
+  //       inertia[2] += ivec[2];
+  //       inertia[3] += ivec[3];
+  //       inertia[4] += ivec[4];
+  //       inertia[5] += ivec[5];
+  //     } else if (eflags[i] & LINE) {
+  //       length = lbonus[line[i]].length;
+  //       theta = lbonus[line[i]].theta;
+  //       MathExtra::inertia_line(length,theta,massone,ivec);
+  //       inertia[0] += ivec[0];
+  //       inertia[1] += ivec[1];
+  //       inertia[2] += ivec[2];
+  //       inertia[3] += ivec[3];
+  //       inertia[4] += ivec[4];
+  //       inertia[5] += ivec[5];
+  //     } else if (eflags[i] & TRIANGLE) {
+  //       inertiaatom = tbonus[tri[i]].inertia;
+  //       quatatom = tbonus[tri[i]].quat;
+  //       MathExtra::inertia_triangle(inertiaatom,quatatom,massone,ivec);
+  //       inertia[0] += ivec[0];
+  //       inertia[1] += ivec[1];
+  //       inertia[2] += ivec[2];
+  //       inertia[3] += ivec[3];
+  //       inertia[4] += ivec[4];
+  //       inertia[5] += ivec[5];
+  //     }
+  //   }
+  // }
 
   // reverse communicate inertia tensor of all bodies
 
@@ -2165,12 +2167,15 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
   double *ex,*ey,*ez;
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
-    tensor[0][0] = itensor[ibody][0];
-    tensor[1][1] = itensor[ibody][1];
-    tensor[2][2] = itensor[ibody][2];
-    tensor[1][2] = tensor[2][1] = itensor[ibody][3];
-    tensor[0][2] = tensor[2][0] = itensor[ibody][4];
-    tensor[0][1] = tensor[1][0] = itensor[ibody][5];
+
+    tensor[0][0] = body[ibody].density * (((itensor[ibody][1] + itensor[ibody][2])/60.0) - body[ibody].volume*(body[ibody].xcm[1]*body[ibody].xcm[1] + body[ibody].xcm[2]*body[ibody].xcm[2]));
+    tensor[1][1] = body[ibody].density * (((itensor[ibody][0] + itensor[ibody][2])/60.0) - body[ibody].volume*(body[ibody].xcm[2]*body[ibody].xcm[2] + body[ibody].xcm[0]*body[ibody].xcm[0]));
+    tensor[2][2] = body[ibody].density * (((itensor[ibody][0] + itensor[ibody][1])/60.0) - body[ibody].volume*(body[ibody].xcm[0]*body[ibody].xcm[0] + body[ibody].xcm[1]*body[ibody].xcm[1]));
+    
+    tensor[0][1] = tensor[1][0] = -body[ibody].density * ((itensor[ibody][3]/120.0 - body[ibody].volume*body[ibody].xcm[0]*body[ibody].xcm[1]));
+    tensor[1][2] = tensor[2][1] = -body[ibody].density * ((itensor[ibody][4]/120.0 - body[ibody].volume*body[ibody].xcm[1]*body[ibody].xcm[2]));  
+    tensor[0][2] = tensor[2][0] = -body[ibody].density * ((itensor[ibody][5]/120.0 - body[ibody].volume*body[ibody].xcm[2]*body[ibody].xcm[0]));
+
 
     inertia = body[ibody].inertia;
     ierror = MathEigen::jacobi3(tensor,inertia,evectors);
@@ -2199,6 +2204,8 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
     if (inertia[0] < EPSILON*max) inertia[0] = 0.0;
     if (inertia[1] < EPSILON*max) inertia[1] = 0.0;
     if (inertia[2] < EPSILON*max) inertia[2] = 0.0;
+
+// std::cout << "~~~~~~~~~~~~~~~~~~~~~~ Proc: " << me << " Body: " << ibody << ", Density: " << body[ibody].density <<  ", Inertia: " << inertia[0] << ", " << inertia[1] << ", " << inertia[2] << ") ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
 
     // enforce 3 evectors as a right-handed coordinate system
     // flip 3rd vector if needed
@@ -2247,8 +2254,10 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
     delta[0] = unwrap[0] - xcm[0];
     delta[1] = unwrap[1] - xcm[1];
     delta[2] = unwrap[2] - xcm[2];
+
     MathExtra::transpose_matvec(b->ex_space,b->ey_space,b->ez_space,
                                 delta,displace[i]);
+
 
     if (extended) {
       if (eflags[i] & ELLIPSOID) {
@@ -2282,6 +2291,10 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
     }
   }
 
+  // forward communicate displace[i] to ghost atoms to test for valid principal moments & axes
+  commflag = DISPLACE;
+  comm->forward_comm(this,3);
+
   // test for valid principal moments & axes
   // recompute moments of inertia around new axes
   // 3 diagonal moments should equal principal moments
@@ -2291,70 +2304,69 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
   for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++)
     for (i = 0; i < 6; i++) itensor[ibody][i] = 0.0;
 
-  for (i = 0; i < nlocal; i++) {
-    if (atom2body[i] < 0) continue;
-    inertia = itensor[atom2body[i]];
+  for (int n = 0; n < nanglelist; n++) {
+    if (atom2body[anglelist[n][0]] < 0) continue;
+    
+    i1 = anglelist[n][0];
+    i2 = anglelist[n][1];
+    i3 = anglelist[n][2];
+    
+    inertia = itensor[atom2body[anglelist[n][0]]];
 
-    if (rmass) massone = rmass[i];
-    else massone = mass[type[i]];
-
-    inertia[0] += massone *
-      (displace[i][1]*displace[i][1] + displace[i][2]*displace[i][2]);
-    inertia[1] += massone *
-      (displace[i][0]*displace[i][0] + displace[i][2]*displace[i][2]);
-    inertia[2] += massone *
-      (displace[i][0]*displace[i][0] + displace[i][1]*displace[i][1]);
-    inertia[3] -= massone * displace[i][1]*displace[i][2];
-    inertia[4] -= massone * displace[i][0]*displace[i][2];
-    inertia[5] -= massone * displace[i][0]*displace[i][1];
+    inertia[0] += body[atom2body[anglelist[n][0]]].density * ((((((displace[i3][0]-displace[i1][0])*(displace[i2][2]-displace[i1][2])) - ((displace[i2][0]-displace[i1][0])*(displace[i3][2]-displace[i1][2]))) *(displace[i1][1]*(displace[i1][1]*displace[i1][1])+displace[i2][1]*((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*(((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*((displace[i1][1]+displace[i2][1]) + displace[i3][1]))) + (((displace[i2][0]-displace[i1][0])*(displace[i3][1]-displace[i1][1])) - ((displace[i3][0]-displace[i1][0])*(displace[i2][1]-displace[i1][1]))) *(displace[i1][2]*(displace[i1][2]*displace[i1][2])+displace[i2][2]*((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*(((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))))/60.0));
+    inertia[1] += body[atom2body[anglelist[n][0]]].density * ((((((displace[i2][1]-displace[i1][1])*(displace[i3][2]-displace[i1][2])) - ((displace[i3][1]-displace[i1][1])*(displace[i2][2]-displace[i1][2]))) *(displace[i1][0]*(displace[i1][0]*displace[i1][0])+displace[i2][0]*((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*(((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*((displace[i1][0]+displace[i2][0]) + displace[i3][0]))) + (((displace[i2][0]-displace[i1][0])*(displace[i3][1]-displace[i1][1])) - ((displace[i3][0]-displace[i1][0])*(displace[i2][1]-displace[i1][1]))) *(displace[i1][2]*(displace[i1][2]*displace[i1][2])+displace[i2][2]*((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*(((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))))/60.0));
+    inertia[2] += body[atom2body[anglelist[n][0]]].density * ((((((displace[i2][1]-displace[i1][1])*(displace[i3][2]-displace[i1][2])) - ((displace[i3][1]-displace[i1][1])*(displace[i2][2]-displace[i1][2]))) *(displace[i1][0]*(displace[i1][0]*displace[i1][0])+displace[i2][0]*((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*(((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*((displace[i1][0]+displace[i2][0]) + displace[i3][0]))) + (((displace[i3][0]-displace[i1][0])*(displace[i2][2]-displace[i1][2])) - ((displace[i2][0]-displace[i1][0])*(displace[i3][2]-displace[i1][2]))) *(displace[i1][1]*(displace[i1][1]*displace[i1][1])+displace[i2][1]*((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*(((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*((displace[i1][1]+displace[i2][1]) + displace[i3][1]))))/60.0));
+    inertia[3] -= body[atom2body[anglelist[n][0]]].density * ((((((displace[i2][1]-displace[i1][1])*(displace[i3][2]-displace[i1][2])) - ((displace[i3][1]-displace[i1][1])*(displace[i2][2]-displace[i1][2]))) * (displace[i1][1]*((((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*((displace[i1][0]+displace[i2][0]) + displace[i3][0]))+displace[i1][0]*(((displace[i1][0]+displace[i2][0]) + displace[i3][0])+displace[i1][0]))+displace[i2][1]*((((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*((displace[i1][0]+displace[i2][0]) + displace[i3][0]))+displace[i2][0]*(((displace[i1][0]+displace[i2][0]) + displace[i3][0])+displace[i2][0]))+displace[i3][1]*((((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*((displace[i1][0]+displace[i2][0]) + displace[i3][0]))+displace[i3][0]*(((displace[i1][0]+displace[i2][0]) + displace[i3][0])+displace[i3][0]))))/120.0));
+    inertia[4] -= body[atom2body[anglelist[n][0]]].density * ((((((displace[i3][0]-displace[i1][0])*(displace[i2][2]-displace[i1][2])) - ((displace[i2][0]-displace[i1][0])*(displace[i3][2]-displace[i1][2]))) * (displace[i1][2]*((((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*((displace[i1][1]+displace[i2][1]) + displace[i3][1]))+displace[i1][1]*(((displace[i1][1]+displace[i2][1]) + displace[i3][1])+displace[i1][1]))+displace[i2][2]*((((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*((displace[i1][1]+displace[i2][1]) + displace[i3][1]))+displace[i2][1]*(((displace[i1][1]+displace[i2][1]) + displace[i3][1])+displace[i2][1]))+displace[i3][2]*((((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*((displace[i1][1]+displace[i2][1]) + displace[i3][1]))+displace[i3][1]*(((displace[i1][1]+displace[i2][1]) + displace[i3][1])+displace[i3][1]))))/120.0));  
+    inertia[5] -= body[atom2body[anglelist[n][0]]].density * ((((((displace[i2][0]-displace[i1][0])*(displace[i3][1]-displace[i1][1])) - ((displace[i3][0]-displace[i1][0])*(displace[i2][1]-displace[i1][1]))) * (displace[i1][0]*((((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))+displace[i1][2]*(((displace[i1][2]+displace[i2][2]) + displace[i3][2])+displace[i1][2]))+displace[i2][0]*((((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))+displace[i2][2]*(((displace[i1][2]+displace[i2][2]) + displace[i3][2])+displace[i2][2]))+displace[i3][0]*((((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))+displace[i3][2]*(((displace[i1][2]+displace[i2][2]) + displace[i3][2])+displace[i3][2]))))/120.0));
   }
 
-  if (extended) {
-    double ivec[6];
-    double *shape,*inertiaatom;
-    double length;
+  // if (extended) {
+  //   double ivec[6];
+  //   double *shape,*inertiaatom;
+  //   double length;
 
-    for (i = 0; i < nlocal; i++) {
-      if (atom2body[i] < 0) continue;
-      inertia = itensor[atom2body[i]];
+  //   for (i = 0; i < nlocal; i++) {
+  //     if (atom2body[i] < 0) continue;
+  //     inertia = itensor[atom2body[i]];
 
-      if (rmass) massone = rmass[i];
-      else massone = mass[type[i]];
+  //     if (rmass) massone = rmass[i];
+  //     else massone = mass[type[i]];
 
-      if (eflags[i] & SPHERE) {
-        inertia[0] += SINERTIA*massone * radius[i]*radius[i];
-        inertia[1] += SINERTIA*massone * radius[i]*radius[i];
-        inertia[2] += SINERTIA*massone * radius[i]*radius[i];
-      } else if (eflags[i] & ELLIPSOID) {
-        shape = ebonus[ellipsoid[i]].shape;
-        MathExtra::inertia_ellipsoid(shape,orient[i],massone,ivec);
-        inertia[0] += ivec[0];
-        inertia[1] += ivec[1];
-        inertia[2] += ivec[2];
-        inertia[3] += ivec[3];
-        inertia[4] += ivec[4];
-        inertia[5] += ivec[5];
-      } else if (eflags[i] & LINE) {
-        length = lbonus[line[i]].length;
-        MathExtra::inertia_line(length,orient[i][0],massone,ivec);
-        inertia[0] += ivec[0];
-        inertia[1] += ivec[1];
-        inertia[2] += ivec[2];
-        inertia[3] += ivec[3];
-        inertia[4] += ivec[4];
-        inertia[5] += ivec[5];
-      } else if (eflags[i] & TRIANGLE) {
-        inertiaatom = tbonus[tri[i]].inertia;
-        MathExtra::inertia_triangle(inertiaatom,orient[i],massone,ivec);
-        inertia[0] += ivec[0];
-        inertia[1] += ivec[1];
-        inertia[2] += ivec[2];
-        inertia[3] += ivec[3];
-        inertia[4] += ivec[4];
-        inertia[5] += ivec[5];
-      }
-    }
-  }
+  //     if (eflags[i] & SPHERE) {
+  //       inertia[0] += SINERTIA*massone * radius[i]*radius[i];
+  //       inertia[1] += SINERTIA*massone * radius[i]*radius[i];
+  //       inertia[2] += SINERTIA*massone * radius[i]*radius[i];
+  //     } else if (eflags[i] & ELLIPSOID) {
+  //       shape = ebonus[ellipsoid[i]].shape;
+  //       MathExtra::inertia_ellipsoid(shape,orient[i],massone,ivec);
+  //       inertia[0] += ivec[0];
+  //       inertia[1] += ivec[1];
+  //       inertia[2] += ivec[2];
+  //       inertia[3] += ivec[3];
+  //       inertia[4] += ivec[4];
+  //       inertia[5] += ivec[5];
+  //     } else if (eflags[i] & LINE) {
+  //       length = lbonus[line[i]].length;
+  //       MathExtra::inertia_line(length,orient[i][0],massone,ivec);
+  //       inertia[0] += ivec[0];
+  //       inertia[1] += ivec[1];
+  //       inertia[2] += ivec[2];
+  //       inertia[3] += ivec[3];
+  //       inertia[4] += ivec[4];
+  //       inertia[5] += ivec[5];
+  //     } else if (eflags[i] & TRIANGLE) {
+  //       inertiaatom = tbonus[tri[i]].inertia;
+  //       MathExtra::inertia_triangle(inertiaatom,orient[i],massone,ivec);
+  //       inertia[0] += ivec[0];
+  //       inertia[1] += ivec[1];
+  //       inertia[2] += ivec[2];
+  //       inertia[3] += ivec[3];
+  //       inertia[4] += ivec[4];
+  //       inertia[5] += ivec[5];
+  //     }
+  //   }
+  // }
 
   // reverse communicate inertia tensor of all bodies
 
@@ -2401,6 +2413,15 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
 
   memory->destroy(itensor);
   if (inpfile) memory->destroy(inbody);
+
+  std::cout << me << ": Body " << 0 << " inertia[0]: " << body[0].inertia[0] << std::endl;
+  std::cout << me << ": Body " << 0 << " inertia[1]: " << body[0].inertia[1] << std::endl;
+  std::cout << me << ": Body " << 0 << " inertia[2]: " << body[0].inertia[2] << std::endl;
+  for (ibody = 0; ibody < nlocal_body; ibody++) {
+    if ((std::ceil(body[ibody].inertia[0] * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[0] * 1000.0) / 1000.0)) {std::cout << me << ": MID Body " << ibody << " inertia[0]: " << body[ibody].inertia[0] << std::endl;}
+    if ((std::ceil(body[ibody].inertia[1] * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[1] * 1000.0) / 1000.0)) {std::cout << me << ": MID Body " << ibody << " inertia[1]: " << body[ibody].inertia[1] << std::endl;}
+    if ((std::ceil(body[ibody].inertia[2] * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[2] * 1000.0) / 1000.0)) {std::cout << me << ": MID Body " << ibody << " inertia[2]: " << body[ibody].inertia[2] << std::endl;}
+}
 }
 
 /* ----------------------------------------------------------------------
@@ -2606,6 +2627,7 @@ void FixRigidAbrade::readfile(int which, double **array, int *inbody)
         if (which == 0) {
           body[m].mass = values.next_double();
           body[m].volume = values.next_double();
+          body[m].density = values.next_double();
           body[m].xcm[0] = values.next_double();
           body[m].xcm[1] = values.next_double();
           body[m].xcm[2] = values.next_double();
@@ -2674,7 +2696,7 @@ void FixRigidAbrade::write_restart_file(const char *file)
   // max_size = largest buffer needed by any proc
   // ncol = # of values per line in output file
 
-  int ncol = ATTRIBUTE_PERBODY + 1;
+  int ncol = ATTRIBUTE_PERBODY + 2;
   int sendrow = nlocal_body;
   int maxrow;
   MPI_Allreduce(&sendrow,&maxrow,1,MPI_INT,MPI_MAX,world);
@@ -2698,24 +2720,25 @@ void FixRigidAbrade::write_restart_file(const char *file)
     buf[i][0] = atom->molecule[body[i].ilocal];
     buf[i][1] = body[i].mass;
     buf[i][2] = body[i].volume;
-    buf[i][3] = body[i].xcm[0];
-    buf[i][4] = body[i].xcm[1];
-    buf[i][5] = body[i].xcm[2];
-    buf[i][6] = ispace[0][0];
-    buf[i][7] = ispace[1][1];
-    buf[i][8] = ispace[2][2];
-    buf[i][9] = ispace[0][1];
-    buf[i][10] = ispace[0][2];
-    buf[i][11] = ispace[1][2];
-    buf[i][12] = body[i].vcm[0];
-    buf[i][13] = body[i].vcm[1];
-    buf[i][14] = body[i].vcm[2];
-    buf[i][15] = body[i].angmom[0];
-    buf[i][16] = body[i].angmom[1];
-    buf[i][17] = body[i].angmom[2];
-    buf[i][18] = (body[i].image & IMGMASK) - IMGMAX;
-    buf[i][19] = (body[i].image >> IMGBITS & IMGMASK) - IMGMAX;
-    buf[i][20] = (body[i].image >> IMG2BITS) - IMGMAX;
+    buf[i][3] = body[i].density;
+    buf[i][4] = body[i].xcm[0];
+    buf[i][5] = body[i].xcm[1];
+    buf[i][6] = body[i].xcm[2];
+    buf[i][7] = ispace[0][0];
+    buf[i][8] = ispace[1][1];
+    buf[i][9] = ispace[2][2];
+    buf[i][10] = ispace[0][1];
+    buf[i][11] = ispace[0][2];
+    buf[i][12] = ispace[1][2];
+    buf[i][13] = body[i].vcm[0];
+    buf[i][14] = body[i].vcm[1];
+    buf[i][15] = body[i].vcm[2];
+    buf[i][16] = body[i].angmom[0];
+    buf[i][17] = body[i].angmom[1];
+    buf[i][18] = body[i].angmom[2];
+    buf[i][19] = (body[i].image & IMGMASK) - IMGMAX;
+    buf[i][20] = (body[i].image >> IMGBITS & IMGMASK) - IMGMAX;
+    buf[i][21] = (body[i].image >> IMG2BITS) - IMGMAX;
   }
 
   // write one chunk of rigid body info per proc to file
@@ -3139,6 +3162,14 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
       buf[m++] = conjqm[3];
     }
 
+  } else if (commflag == DISPLACE) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      buf[m++] = displace[j][0];
+      buf[m++] = displace[j][1];
+      buf[m++] = displace[j][2];
+    }
+
   } else if (commflag == FULL_BODY) {
     for (i = 0; i < n; i++) {
       j = list[i];
@@ -3229,6 +3260,13 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
       conjqm[3] = buf[m++];
     }
 
+  } else if (commflag == DISPLACE) {
+    for (i = first; i < last; i++) {
+      displace[i][0] = buf[m++];
+      displace[i][1] = buf[m++];
+      displace[i][2] = buf[m++];
+    }
+
   } else if (commflag == FULL_BODY) {
     for (i = first; i < last; i++) {
       bodyown[i] = static_cast<int> (buf[m++]);
@@ -3298,6 +3336,7 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
       buf[m++] = xgc[2];
       buf[m++] = body[bodyown[i]].mass;
       buf[m++] = body[bodyown[i]].volume;
+      buf[m++] = body[bodyown[i]].density;
       buf[m++] = static_cast<double>(body[bodyown[i]].natoms);
     }
 
@@ -3379,6 +3418,7 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
       xgc[2] += buf[m++];
       body[bodyown[j]].mass += buf[m++];
       body[bodyown[j]].volume += buf[m++];
+      body[bodyown[j]].density += buf[m++];
       body[bodyown[j]].natoms += static_cast<int>(buf[m++]);
     }
 
