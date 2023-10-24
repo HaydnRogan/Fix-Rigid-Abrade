@@ -72,6 +72,9 @@ class FixRigidAbrade : public Fix {
   double dtv, dtf, dtq;
   double *step_respa;
   int triclinic;
+  
+  // Modified Commflags
+  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM_ANGMOM, XCM_MASS, DISPLACE, ITENSOR, DOF};
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
@@ -87,9 +90,10 @@ class FixRigidAbrade : public Fix {
     int natoms;            // total number of atoms in body
     int ilocal;            // index of owning atom
     double mass;           // total mass of body
-    double volume;           // total mass of body
+    double volume;         // total mass of body
+    double density;        // mass density of the body
     double xcm[3];         // COM position
-    double xgc[3];         // geometric center position
+    double xgc[3];         // geometric center position - should equal xcm for the assumed homogenous mass density
     double vcm[3];         // COM velocity
     double fcm[3];         // force on COM
     double torque[3];      // torque around COM
