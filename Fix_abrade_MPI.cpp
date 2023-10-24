@@ -1996,11 +1996,6 @@ void FixRigidAbrade::setup_bodies_static()
     }
 
   // reverse communicate xcm, mass of all bodies
-
-for (ibody = 0; ibody < nlocal_body; ibody++) {
-    // std::cout << me << ": PRE Body " << ibody << " mass: " << body[ibody].mass << std::endl;
-}
-  
   commflag = XCM_MASS;
   comm->reverse_comm(this,10);
 
@@ -2062,6 +2057,35 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
   //   and reset body and atom xcmimage flags via pre_neighbor()
 
   pre_neighbor();
+
+// Since atom2body and xcmimage have been reset, we need to reassign them to the ghost atoms
+
+// Cycle through all angles and assign atom2body and xcmimage to their ghost atoms
+  for (int n=0; n<nanglelist; n++){  
+
+  // Cycle through atoms in angle
+    for (int i = 0; i < 3; i++){
+        
+        // Check if i is a ghost atom
+        if (anglelist[n][i] >= nlocal){
+
+        // Check if it exists for the other atoms in the angle and set its value
+        for (int j = 1; j < 3; j++){
+          if (anglelist[n][(i+j)%3] < nlocal) {
+            atom2body[anglelist[n][i]] = atom2body[anglelist[n][(i+j)%3]];
+            xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
+            }
+          }
+        }
+      // Check if all angle atoms have a xcm
+      if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
+    }
+
+      // Check if all atoms in the angle think they belong to the same body
+      if (!((atom2body[anglelist[n][0]] == atom2body[anglelist[n][1]]) && (atom2body[anglelist[n][0]] == atom2body[anglelist[n][2]])))
+      error->all(FLERR, "atom2body not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
+  }
+  
 
   // compute 6 moments of inertia of each body in Cartesian reference frame
   // dx,dy,dz = coords relative to center-of-mass
@@ -2204,8 +2228,6 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
     if (inertia[0] < EPSILON*max) inertia[0] = 0.0;
     if (inertia[1] < EPSILON*max) inertia[1] = 0.0;
     if (inertia[2] < EPSILON*max) inertia[2] = 0.0;
-
-// std::cout << "~~~~~~~~~~~~~~~~~~~~~~ Proc: " << me << " Body: " << ibody << ", Density: " << body[ibody].density <<  ", Inertia: " << inertia[0] << ", " << inertia[1] << ", " << inertia[2] << ") ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" << std::endl;
 
     // enforce 3 evectors as a right-handed coordinate system
     // flip 3rd vector if needed
@@ -2370,8 +2392,20 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
 
   // reverse communicate inertia tensor of all bodies
 
+
   commflag = ITENSOR;
   comm->reverse_comm(this,6);
+
+  std::cout << me << ": Body " << 0 << " inertia: (" << body[0].inertia[0] << ", "  << body[0].inertia[1] << ", "  << body[0].inertia[2] << ") Volume: " <<  body[0].volume << " density: "<< body[0].density << std::endl;
+  for (ibody = 0; ibody < nlocal_body; ibody++) {
+    // std::cout << me << ": testing body " << ibody << std::endl;
+    if (
+      (std::ceil(body[ibody].inertia[0] * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[0] * 1000.0) / 1000.0) ||
+      (std::ceil(body[ibody].inertia[1] * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[1] * 1000.0) / 1000.0) ||
+      (std::ceil(body[ibody].inertia[2] * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[2] * 1000.0) / 1000.0) 
+      ) {std::cout << me << ": Dissagreement with Body " << ibody << " inertia: (" << body[ibody].inertia[0] << ", "  << body[ibody].inertia[1] << ", "  << body[ibody].inertia[2] << ") Volume: " <<  body[ibody].volume << " density: "<< body[ibody].density << std::endl;}
+    
+}
 
   // error check that re-computed moments of inertia match diagonalized ones
   // do not do test for bodies with params read from inpfile
@@ -2414,14 +2448,8 @@ for (ibody = 0; ibody < nlocal_body; ibody++) {
   memory->destroy(itensor);
   if (inpfile) memory->destroy(inbody);
 
-  std::cout << me << ": Body " << 0 << " inertia[0]: " << body[0].inertia[0] << std::endl;
-  std::cout << me << ": Body " << 0 << " inertia[1]: " << body[0].inertia[1] << std::endl;
-  std::cout << me << ": Body " << 0 << " inertia[2]: " << body[0].inertia[2] << std::endl;
-  for (ibody = 0; ibody < nlocal_body; ibody++) {
-    if ((std::ceil(body[ibody].inertia[0] * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[0] * 1000.0) / 1000.0)) {std::cout << me << ": MID Body " << ibody << " inertia[0]: " << body[ibody].inertia[0] << std::endl;}
-    if ((std::ceil(body[ibody].inertia[1] * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[1] * 1000.0) / 1000.0)) {std::cout << me << ": MID Body " << ibody << " inertia[1]: " << body[ibody].inertia[1] << std::endl;}
-    if ((std::ceil(body[ibody].inertia[2] * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[2] * 1000.0) / 1000.0)) {std::cout << me << ": MID Body " << ibody << " inertia[2]: " << body[ibody].inertia[2] << std::endl;}
-}
+  // std::cout << me << ": --------- Finished setup_bodies_static() for " << nlocal_body << " bodies -----------" << std::endl;
+
 }
 
 /* ----------------------------------------------------------------------
