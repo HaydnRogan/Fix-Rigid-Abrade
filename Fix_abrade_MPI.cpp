@@ -2396,7 +2396,7 @@ void FixRigidAbrade::setup_bodies_static()
   commflag = ITENSOR;
   comm->reverse_comm(this,6);
 
-  std::cout << me << ": Body " << 0 << " inertia: (" << body[0].inertia[0] << ", "  << body[0].inertia[1] << ", "  << body[0].inertia[2] << ") Volume: " <<  body[0].volume << " density: "<< body[0].density << std::endl;
+  if (nlocal_body > 0)std::cout << me << ": Body " << 0 << " inertia: (" << body[0].inertia[0] << ", "  << body[0].inertia[1] << ", "  << body[0].inertia[2] << ") Volume: " <<  body[0].volume << " density: "<< body[0].density << std::endl;
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     // std::cout << me << ": testing body " << ibody << std::endl;
     if (
