@@ -56,7 +56,7 @@ using namespace RigidConst;
 
 FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   Fix(lmp, narg, arg), step_respa(nullptr),
-  inpfile(nullptr), body(nullptr), bodyown(nullptr), bodytag(nullptr), atom2body(nullptr),
+  inpfile(nullptr), body(nullptr), bodyown(nullptr), bodytag(nullptr), atom2body(nullptr), vertexdata(nullptr),
   xcmimage(nullptr), displace(nullptr), eflags(nullptr), orient(nullptr), dorient(nullptr),
   avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr), counts(nullptr),
   itensor(nullptr), mass_body(nullptr), langextra(nullptr), random(nullptr),
@@ -77,6 +77,12 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   stores_ids = 1;
   centroidstressflag = CENTROID_AVAIL;
 
+  restart_peratom = 1; //~ Per-atom information is saved to the restart file
+  peratom_flag = 1;
+  size_peratom_cols = 7; //~ normal x/y/z, area and displacement speed x/y/z
+  peratom_freq = 1; // every step, **TODO change to user input utils::inumeric(FLERR,arg[5],false,lmp);
+  create_attribute = 1; //fix stores attributes that need setting when a new atom is created
+
   MPI_Comm_rank(world,&me);
   MPI_Comm_size(world,&nprocs);
 
@@ -87,6 +93,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   bodyown = nullptr;
   bodytag = nullptr;
   atom2body = nullptr;
+  vertexdata = nullptr;
   xcmimage = nullptr;
   displace = nullptr;
   eflags = nullptr;
@@ -94,33 +101,62 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   dorient = nullptr;
   FixRigidAbrade::grow_arrays(atom->nmax);
   atom->add_callback(Atom::GROW);
+  atom->add_callback(Atom::RESTART);
 
+  // Set initial vertexdata values to zero
+  for (int i = 0; i < atom->nlocal; i++) {
+    vertexdata[i][0] = vertexdata[i][1] = vertexdata[i][2] = 0.0;
+    vertexdata[i][3] = 0.0;
+    vertexdata[i][4] = vertexdata[i][5] = vertexdata[i][6] = 0.0;
+  }
   // parse args for rigid body specification
 
   int *mask = atom->mask;
   tagint *bodyID = nullptr;
   int nlocal = atom->nlocal;
 
-  if (narg < 4) error->all(FLERR,"Illegal fix rigid/abrade command");
-  if (strcmp(arg[3],"molecule") == 0) {
+    if (narg < 6) error->all(FLERR,"1 Illegal fix rigid/shell command");
+  
+  hstr = mustr = nullptr;
+  hstyle = mustyle = CONSTANT;
+
+
+  if (utils::strmatch(arg[3],"^v_")) {
+    hstr = utils::strdup(arg[3]+2);
+    hstyle = EQUAL;
+  } else {
+    hardness = utils::numeric(FLERR,arg[3],false,lmp);
+    // Conver from pressure units to force/distance^2
+    hardness /= force->nktv2p;
+    hstyle = CONSTANT;
+  }
+  if (utils::strmatch(arg[4],"^v_")) {
+    mustr = utils::strdup(arg[4]+2);
+    mustyle = EQUAL;
+  } else {
+    fric_coeff = utils::numeric(FLERR,arg[4],false,lmp);
+    mustyle = CONSTANT;
+  }
+
+  if (strcmp(arg[5],"molecule") == 0) {
     if (atom->molecule_flag == 0)
-      error->all(FLERR,"Fix rigid/abrade requires atom attribute molecule");
+      error->all(FLERR,"Fix rigid/shell requires atom attribute molecule");
     bodyID = atom->molecule;
 
-  } else if (strcmp(arg[3],"custom") == 0) {
-    if (narg < 5) error->all(FLERR,"Illegal fix rigid/abrade command");
+  } else if (strcmp(arg[5],"custom") == 0) {
+    if (narg < 7) error->all(FLERR,"2 Illegal fix rigid/shell command");
       bodyID = new tagint[nlocal];
       customflag = 1;
 
       // determine whether atom-style variable or atom property is used
 
-      if (utils::strmatch(arg[4],"^i_")) {
+      if (utils::strmatch(arg[6],"^i_")) {
         int is_double,cols;
-        int custom_index = atom->find_custom(arg[4]+2,is_double,cols);
+        int custom_index = atom->find_custom(arg[6]+2,is_double,cols);
         if (custom_index == -1)
-          error->all(FLERR,"Fix rigid/abrade custom requires previously defined property/atom");
+          error->all(FLERR,"Fix rigid/shell custom requires previously defined property/atom");
         else if (is_double || cols)
-          error->all(FLERR,"Fix rigid/abrade custom requires integer-valued property/atom vector");
+          error->all(FLERR,"Fix rigid/shell custom requires integer-valued property/atom vector");
         int minval = INT_MAX;
         int *value = atom->ivector[custom_index];
         for (i = 0; i < nlocal; i++)
@@ -133,13 +169,13 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
             bodyID[i] = (tagint)(value[i] - minval + 1);
           else bodyID[i] = 0;
 
-      } else if (utils::strmatch(arg[4],"^v_")) {
-        int ivariable = input->variable->find(arg[4]+2);
+      } else if (utils::strmatch(arg[6],"^v_")) {
+        int ivariable = input->variable->find(arg[6]+2);
         if (ivariable < 0)
-          error->all(FLERR,"Variable {} for fix rigid/abrade custom does not exist", arg[4]+2);
+          error->all(FLERR,"Variable {} for fix rigid/shell custom does not exist", arg[6]+2);
         if (input->variable->atomstyle(ivariable) == 0)
-          error->all(FLERR,"Fix rigid/abrade custom variable {} is not atom-style variable",
-                     arg[4]+2);
+          error->all(FLERR,"Fix rigid/shell custom variable {} is not atom-style variable",
+                     arg[6]+2);
         auto value = new double[nlocal];
         input->variable->compute_atom(ivariable,0,value,1,0);
         int minval = INT_MAX;
@@ -154,10 +190,10 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
           else bodyID[0] = 0;
         delete[] value;
       } else error->all(FLERR,"Unsupported fix rigid custom property");
-  } else error->all(FLERR,"Illegal fix rigid/abrade command");
+  } else error->all(FLERR,"3 Illegal fix rigid/shell command");
 
   if (atom->map_style == Atom::MAP_NONE)
-    error->all(FLERR,"Fix rigid/abrade requires an atom map, see atom_modify");
+    error->all(FLERR,"Fix rigid/shell requires an atom map, see atom_modify");
 
   // maxmol = largest bodyID #
 
@@ -197,28 +233,30 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
     p_flag[i] = 0;
   }
 
-  int iarg = 4;
+
+
+  int iarg = 6;
   if (customflag) ++iarg;
 
   while (iarg < narg) {
     if (strcmp(arg[iarg],"langevin") == 0) {
-      if (iarg+5 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
-      if ((strcmp(style,"rigid/abrade") != 0) &&
-          (strcmp(style,"rigid/nve/abrade") != 0) &&
-          (strcmp(style,"rigid/nph/abrade") != 0))
-        error->all(FLERR,"Illegal fix rigid/abrade command");
+      if (iarg+5 > narg) error->all(FLERR,"4 Illegal fix rigid/shell command");
+      if ((strcmp(style,"rigid/shell") != 0) &&
+          (strcmp(style,"rigid/nve/shell") != 0) &&
+          (strcmp(style,"rigid/nph/shell") != 0))
+        error->all(FLERR,"5 Illegal fix rigid/shell command");
       langflag = 1;
       t_start = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       t_stop = utils::numeric(FLERR,arg[iarg+2],false,lmp);
       t_period = utils::numeric(FLERR,arg[iarg+3],false,lmp);
       seed = utils::inumeric(FLERR,arg[iarg+4],false,lmp);
       if (t_period <= 0.0)
-        error->all(FLERR,"Fix rigid/abrade langevin period must be > 0.0");
-      if (seed <= 0) error->all(FLERR,"Illegal fix rigid/abrade command");
+        error->all(FLERR,"Fix rigid/shell langevin period must be > 0.0");
+      if (seed <= 0) error->all(FLERR,"6 Illegal fix rigid/shell command");
       iarg += 5;
 
     } else if (strcmp(arg[iarg],"infile") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
+      if (iarg+2 > narg) error->all(FLERR,"7 Illegal fix rigid/shell command");
       delete[] inpfile;
       inpfile = utils::strdup(arg[iarg+1]);
       restart_file = 1;
@@ -226,22 +264,22 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
       iarg += 2;
 
     } else if (strcmp(arg[iarg],"reinit") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
       reinitflag = utils::logical(FLERR,arg[iarg+1],false,lmp);
       iarg += 2;
 
     } else if (strcmp(arg[iarg],"mol") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
       int imol = atom->find_molecule(arg[iarg+1]);
-      if (imol == -1) error->all(FLERR,"Molecule template ID for fix rigid/abrade does not exist");
+      if (imol == -1) error->all(FLERR,"Molecule template ID for fix rigid/shell does not exist");
       onemols = &atom->molecules[imol];
       nmol = onemols[0]->nset;
       restart_file = 1;
       iarg += 2;
 
     } else if (strcmp(arg[iarg],"temp") == 0) {
-      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
-      if (!utils::strmatch(style,"^rigid/n.t/abrade"))
+      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
+      if (!utils::strmatch(style,"^rigid/n.t/shell"))
         error->all(FLERR,"Illegal fix rigid command");
       tstat_flag = 1;
       t_start = utils::numeric(FLERR,arg[iarg+1],false,lmp);
@@ -250,9 +288,9 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
       iarg += 4;
 
     } else if (strcmp(arg[iarg],"iso") == 0) {
-      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
-      if (!utils::strmatch(style,"^rigid/np./abrade"))
-        error->all(FLERR,"Illegal fix rigid/abrade command");
+      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
+      if (!utils::strmatch(style,"^rigid/np./shell"))
+        error->all(FLERR,"Illegal fix rigid/shell command");
       pcouple = XYZ;
       p_start[0] = p_start[1] = p_start[2] = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       p_stop[0] = p_stop[1] = p_stop[2] = utils::numeric(FLERR,arg[iarg+2],false,lmp);
@@ -260,15 +298,15 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
         utils::numeric(FLERR,arg[iarg+3],false,lmp);
       p_flag[0] = p_flag[1] = p_flag[2] = 1;
       if (domain->dimension == 2) {
-        p_start[2] = p_stop[2] = p_period[2] = 0.0;
+              p_start[2] = p_stop[2] = p_period[2] = 0.0;
         p_flag[2] = 0;
       }
       iarg += 4;
 
     } else if (strcmp(arg[iarg],"aniso") == 0) {
-      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
-      if (!utils::strmatch(style,"^rigid/np./abrade"))
-        error->all(FLERR,"Illegal fix rigid/abrade command");
+      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
+      if (!utils::strmatch(style,"^rigid/np./shell"))
+        error->all(FLERR,"Illegal fix rigid/shell command");
       p_start[0] = p_start[1] = p_start[2] = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       p_stop[0] = p_stop[1] = p_stop[2] = utils::numeric(FLERR,arg[iarg+2],false,lmp);
       p_period[0] = p_period[1] = p_period[2] =
@@ -276,14 +314,14 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
       p_flag[0] = p_flag[1] = p_flag[2] = 1;
       if (domain->dimension == 2) {
         p_start[2] = p_stop[2] = p_period[2] = 0.0;
-        p_flag[2] = 0;
+              p_flag[2] = 0;
       }
       iarg += 4;
 
     } else if (strcmp(arg[iarg],"x") == 0) {
-      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
-      if (!utils::strmatch(style,"^rigid/np./abrade"))
-        error->all(FLERR,"Illegal fix rigid/abrade command");
+      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
+      if (!utils::strmatch(style,"^rigid/np./shell"))
+        error->all(FLERR,"Illegal fix rigid/shell command");
       p_start[0] = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       p_stop[0] = utils::numeric(FLERR,arg[iarg+2],false,lmp);
       p_period[0] = utils::numeric(FLERR,arg[iarg+3],false,lmp);
@@ -291,9 +329,9 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
       iarg += 4;
 
     } else if (strcmp(arg[iarg],"y") == 0) {
-      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
-      if (!utils::strmatch(style,"^rigid/np./abrade"))
-        error->all(FLERR,"Illegal fix rigid/abrade command");
+      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
+      if (!utils::strmatch(style,"^rigid/np./shell"))
+        error->all(FLERR,"Illegal fix rigid/shell command");
       p_start[1] = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       p_stop[1] = utils::numeric(FLERR,arg[iarg+2],false,lmp);
       p_period[1] = utils::numeric(FLERR,arg[iarg+3],false,lmp);
@@ -301,9 +339,9 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
       iarg += 4;
 
     } else if (strcmp(arg[iarg],"z") == 0) {
-      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
-      if (!utils::strmatch(style,"^rigid/np./abrade"))
-        error->all(FLERR,"Illegal fix rigid/abrade command");
+      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
+      if (!utils::strmatch(style,"^rigid/np./shell"))
+        error->all(FLERR,"Illegal fix rigid/shell command");
       p_start[2] = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       p_stop[2] = utils::numeric(FLERR,arg[iarg+2],false,lmp);
       p_period[2] = utils::numeric(FLERR,arg[iarg+3],false,lmp);
@@ -311,18 +349,18 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
       iarg += 4;
 
     } else if (strcmp(arg[iarg],"couple") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
       if (strcmp(arg[iarg+1],"xyz") == 0) pcouple = XYZ;
       else if (strcmp(arg[iarg+1],"xy") == 0) pcouple = XY;
       else if (strcmp(arg[iarg+1],"yz") == 0) pcouple = YZ;
       else if (strcmp(arg[iarg+1],"xz") == 0) pcouple = XZ;
       else if (strcmp(arg[iarg+1],"none") == 0) pcouple = NONE;
-      else error->all(FLERR,"Illegal fix rigid/abrade command");
+      else error->all(FLERR,"Illegal fix rigid/shell command");
       iarg += 2;
 
     } else if (strcmp(arg[iarg],"dilate") == 0) {
       if (iarg+2 > narg)
-        error->all(FLERR,"Illegal fix rigid/abrade nvt/npt/nph command");
+        error->all(FLERR,"Illegal fix rigid/shell nvt/npt/nph command");
       if (strcmp(arg[iarg+1],"all") == 0) allremap = 1;
       else {
         allremap = 0;
@@ -330,34 +368,34 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
         id_dilate = utils::strdup(arg[iarg+1]);
         int idilate = group->find(id_dilate);
         if (idilate == -1)
-          error->all(FLERR,"Fix rigid/abrade nvt/npt/nph dilate group ID "
+          error->all(FLERR,"Fix rigid/shell nvt/npt/nph dilate group ID "
                      "does not exist");
       }
       iarg += 2;
 
     } else if (strcmp(arg[iarg],"tparam") == 0) {
-      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
-      if (!utils::strmatch(style,"^rigid/n.t/abrade"))
-        error->all(FLERR,"Illegal fix rigid/abrade command");
+      if (iarg+4 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
+      if (!utils::strmatch(style,"^rigid/n.t/shell"))
+        error->all(FLERR,"Illegal fix rigid/shell command");
       t_chain = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
       t_iter = utils::inumeric(FLERR,arg[iarg+2],false,lmp);
       t_order = utils::inumeric(FLERR,arg[iarg+3],false,lmp);
       iarg += 4;
 
     } else if (strcmp(arg[iarg],"pchain") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
-      if (!utils::strmatch(style,"^rigid/np./abrade"))
-        error->all(FLERR,"Illegal fix rigid/abrade command");
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
+      if (!utils::strmatch(style,"^rigid/np./shell"))
+        error->all(FLERR,"Illegal fix rigid/shell command");
       p_chain = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
       iarg += 2;
 
     } else if (strcmp(arg[iarg],"gravity") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/shell command");
       delete[] id_gravity;
       id_gravity = utils::strdup(arg[iarg+1]);
       iarg += 2;
 
-    } else error->all(FLERR,"Illegal fix rigid/abrade command");
+    } else error->all(FLERR,"Illegal fix rigid/shell command");
   }
 
   // error check and further setup for Molecule template
@@ -474,6 +512,10 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   // wait to setup bodies until comm stencils are defined
 
   setupflag = 0;
+
+
+  varflag = CONSTANT;
+  if (hstyle != CONSTANT || mustyle != CONSTANT) varflag = EQUAL;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -491,6 +533,7 @@ FixRigidAbrade::~FixRigidAbrade()
   memory->destroy(bodyown);
   memory->destroy(bodytag);
   memory->destroy(atom2body);
+  memory->destroy(vertexdata);
   memory->destroy(xcmimage);
   memory->destroy(displace);
   memory->destroy(eflags);
@@ -526,6 +569,9 @@ void FixRigidAbrade::init()
 {
   triclinic = domain->triclinic;
 
+  // need a full perpetual neighbor list for abrasion calculations
+  neighbor->add_request(this,NeighConst::REQ_FULL);
+
   // warn if more than one rigid fix
   // if earlyflag, warn if any post-force fixes come after a rigid fix
 
@@ -544,6 +590,23 @@ void FixRigidAbrade::init()
     }
   }
 
+  // check variables
+
+    if (hstr) {
+      hvar = input->variable->find(hstr);
+      if (hvar < 0)
+        error->all(FLERR,"Variable name for fix rigid/shell does not exist");
+      if (!input->variable->equalstyle(hvar))
+        error->all(FLERR,"Variable for fix rigid/shell is invalid style");
+    }
+    if (mustr) {
+      muvar = input->variable->find(mustr);
+      if (muvar < 0)
+        error->all(FLERR,"Variable name for fix rigid/shell does not exist");
+      if (!input->variable->equalstyle(muvar))
+        error->all(FLERR,"Variable for fix rigid/shell is invalid style");
+    }
+    
   // warn if body properties are read from inpfile or a mol template file
   //   and the gravity keyword is not set and a gravity fix exists
   // this could mean body particles are overlapped
@@ -890,6 +953,15 @@ void FixRigidAbrade::post_force(int /*vflag*/)
 {
   if (langflag) apply_langevin_thermostat();
   if (earlyflag) compute_forces_and_torques();
+
+   // update hardness due to variables in input script
+  if (varflag != CONSTANT) {
+    modify->clearstep_compute();
+    if (hstyle == EQUAL) hardness = input->variable->compute_equal(hvar);
+    if (mustyle == EQUAL) fric_coeff = input->variable->compute_equal(muvar);
+    modify->addstep_compute(update->ntimestep + 1);
+  }
+
 }
 
 
@@ -2822,6 +2894,10 @@ void FixRigidAbrade::grow_arrays(int nmax)
   memory->grow(bodyown,nmax,"rigid/abrade:bodyown");
   memory->grow(bodytag,nmax,"rigid/abrade:bodytag");
   memory->grow(atom2body,nmax,"rigid/abrade:atom2body");
+
+  memory->grow(vertexdata,nmax,size_peratom_cols,"rigid/shell:vertexdata");
+  array_atom = vertexdata;
+
   memory->grow(xcmimage,nmax,"rigid/abrade:xcmimage");
   memory->grow(displace,nmax,3,"rigid/abrade:displace");
   if (extended) {
@@ -2852,6 +2928,9 @@ void FixRigidAbrade::copy_arrays(int i, int j, int delflag)
   displace[j][0] = displace[i][0];
   displace[j][1] = displace[i][1];
   displace[j][2] = displace[i][2];
+
+  for (int q = 0; q < size_peratom_cols; q++){
+    vertexdata[j][q] = vertexdata[i][q];}
 
   if (extended) {
     eflags[j] = eflags[i];
@@ -2899,6 +2978,14 @@ void FixRigidAbrade::set_arrays(int i)
   displace[i][0] = 0.0;
   displace[i][1] = 0.0;
   displace[i][2] = 0.0;
+
+  vertexdata[i][0] = 0.0;
+  vertexdata[i][1] = 0.0;
+  vertexdata[i][2] = 0.0;
+  vertexdata[i][3] = 0.0;
+  vertexdata[i][4] = 0.0;
+  vertexdata[i][5] = 0.0;
+  vertexdata[i][6] = 0.0;
 
   // must also zero vatom if per-atom virial calculated on this timestep
   // since vatom is calculated before and after atom migration
@@ -3015,6 +3102,9 @@ int FixRigidAbrade::pack_exchange(int i, double *buf)
   buf[3] = displace[i][1];
   buf[4] = displace[i][2];
 
+  for (int q = 0; q < size_peratom_cols; q++){
+  buf[5+q] = vertexdata[i][q];}
+
   // extended attribute info
 
   int m = 5;
@@ -3066,6 +3156,9 @@ int FixRigidAbrade::unpack_exchange(int nlocal, double *buf)
   displace[nlocal][0] = buf[2];
   displace[nlocal][1] = buf[3];
   displace[nlocal][2] = buf[4];
+
+    for (int q = 0; q < size_peratom_cols; q++){
+  vertexdata[nlocal][q] = buf[5+q];}
 
   // extended attribute info
 
@@ -3757,6 +3850,8 @@ double FixRigidAbrade::memory_usage()
     if (dorientflag) bytes = (double)nmax*3 * sizeof(double);
   }
   bytes += (double)nmax_body * sizeof(Body);
+
+  bytes += atom->nmax*size_peratom_cols * sizeof(double); //~ For vertexdata array
   return bytes;
 }
 
