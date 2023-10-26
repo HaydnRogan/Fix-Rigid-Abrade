@@ -32,6 +32,7 @@ class FixRigidAbrade : public Fix {
   ~FixRigidAbrade() override;
   int setmask() override;
   void init() override;
+  void init_list(int, class NeighList *) override;
   void setup(int) override;
   void initial_integrate(int) override;
   void post_force(int) override;
@@ -69,6 +70,12 @@ class FixRigidAbrade : public Fix {
   double memory_usage() override;
 
   double **vertexdata;   // array to store the normals, areas, and displacement velocities of each atom (public to allow access from pairstyles)
+
+private:
+
+  class NeighList *list;
+  void areas_and_normals();
+  void displacement_of_atom(int, int, double[3], double[3]);
 
  protected:
   int me, nprocs;
