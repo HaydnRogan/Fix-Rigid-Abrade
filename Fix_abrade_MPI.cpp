@@ -32,6 +32,7 @@
 #include "modify.h"
 #include "molecule.h"
 #include "neighbor.h"
+#include "neigh_list.h"
 #include "random_mars.h"
 #include "respa.h"
 #include "rigid_const.h"
@@ -56,7 +57,7 @@ using namespace RigidConst;
 
 FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   Fix(lmp, narg, arg), step_respa(nullptr),
-  inpfile(nullptr), body(nullptr), bodyown(nullptr), bodytag(nullptr), atom2body(nullptr), vertexdata(nullptr),
+  inpfile(nullptr), body(nullptr), bodyown(nullptr), bodytag(nullptr), atom2body(nullptr), vertexdata(nullptr), list(nullptr),
   xcmimage(nullptr), displace(nullptr), eflags(nullptr), orient(nullptr), dorient(nullptr),
   avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr), counts(nullptr),
   itensor(nullptr), mass_body(nullptr), langextra(nullptr), random(nullptr),
@@ -556,7 +557,8 @@ int FixRigidAbrade::setmask()
   int mask = 0;
   mask |= INITIAL_INTEGRATE;
   mask |= FINAL_INTEGRATE;
-  if (langflag) mask |= POST_FORCE;
+  mask |= POST_FORCE;
+  // if (langflag) mask |= POST_FORCE;
   mask |= PRE_NEIGHBOR;
   mask |= INITIAL_INTEGRATE_RESPA;
   mask |= FINAL_INTEGRATE_RESPA;
@@ -648,6 +650,15 @@ void FixRigidAbrade::init()
   if (utils::strmatch(update->integrate_style,"^respa"))
     step_respa = (dynamic_cast<Respa *>(update->integrate))->step;
 }
+
+/* ---------------------------------------------------------------------- */
+
+void FixRigidAbrade::init_list(int /*id*/, NeighList *ptr)
+{
+  list = ptr;
+}
+
+/* ---------------------------------------------------------------------- */
 
 /* ----------------------------------------------------------------------
    setup static/dynamic properties of rigid bodies, using current atom info.
@@ -962,10 +973,404 @@ void FixRigidAbrade::post_force(int /*vflag*/)
     modify->addstep_compute(update->ntimestep + 1);
   }
 
+  // ----------------------------- Calling abrasion functions ---------------------------------------------
+
+  // Atom variables
+  double **x = atom->x;
+  double **v = atom->v;
+  double **f = atom->f;
+  double v_rel[3];
+	double x_rel[3];
+
+  // variables used to navigate neighbour lists
+  int inum = list->inum;
+  int *ilist = list->ilist;
+  int *numneigh = list->numneigh;
+  int ** firstneigh = list->firstneigh;
+  int nlocal = atom->nlocal;
+
+  // Calculate the area and normal associated with each atom
+  // Uses displace[i] of ghost atoms which will need to be forward communicated each time
+  commflag = DISPLACE;
+  comm->forward_comm(this,3);
+
+  int nanglelist = neighbor->nanglelist;
+  int **anglelist = neighbor->anglelist;
+
+// Cycle through all angles and assign atom2body and xcmimage to their ghost atoms
+  for (int n=0; n<nanglelist; n++){  
+
+  // Cycle through atoms in angle
+    for (int i = 0; i < 3; i++){
+        
+        // Check if i is a ghost atom
+        if (anglelist[n][i] >= nlocal){
+
+        // Check if it exists for the other atoms in the angle and set its value
+        for (int j = 1; j < 3; j++){
+          if (anglelist[n][(i+j)%3] < nlocal) {
+            atom2body[anglelist[n][i]] = atom2body[anglelist[n][(i+j)%3]];
+            xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
+            }
+          }
+        }
+      // Check if all angle atoms have a xcm
+      if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
+    }
+
+      // Check if all atoms in the angle think they belong to the same body
+      if (!((atom2body[anglelist[n][0]] == atom2body[anglelist[n][1]]) && (atom2body[anglelist[n][0]] == atom2body[anglelist[n][2]])))
+      error->all(FLERR, "atom2body not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
+  }
+  
+  areas_and_normals();
+
+  // Don't need to reverse communicate normals since they are only used for atom i which is local 
+
+  // loop over central atoms in neighbor lists 
+  for (int ii = 0; ii < inum; ii ++){
+  
+  // get local index of central atom ii (i is always a local atom)
+  int i = ilist[ii];
+
+  if (i > atom->nlocal)
+  
+  // only process abrasion for atoms in a body
+  if (atom2body[i] < 0) continue;
+
+  // check if force is acting on atom i
+  if (MathExtra::len3(f[i])) {
+
+  // get number of neighbours for atom i
+  int jnum = numneigh[i];
+
+  // get list of local neighbor ids for atom i
+  int *jlist = firstneigh[i];
+
+  // cycle through neighbor list of i and calculate abrasion
+  for (int jj = 0; jj < jnum; jj++){
+    // get local index of neighbor to access its properties (j maybe a ghost atom)
+    int j = jlist[jj];
+
+    // check that the atoms are not in the same body
+    if (atom2body[i] != atom2body[j]){
+    
+    // Calculating the relative position of i and j in global coordinates
+    // Position and velocity of ghost atoms should already be stored for granular simulations
+    x_rel[0] = x[j][0] - x[i][0];
+    x_rel[1] = x[j][1] - x[i][1];
+    x_rel[2] = x[j][2] - x[i][2];
+
+    v_rel[0] = v[j][0] - v[i][0];
+    v_rel[1] = v[j][1] - v[i][1];
+    v_rel[2] = v[j][2] - v[i][2];
+
+    // Calculate the displacement on atom i from an impact by j
+    displacement_of_atom(i, j, x_rel, v_rel);
+    // std::cout << "Total displacement of atom " << atom->tag[i] << ": (" << vertexdata[i][4] << ", " << 
+        }
+      }
+    }
+  }
+
+  // reverse communicate displacement velocities to all atoms 
+
+}
+
+/* ---------------------------------------------------------------------- */
+
+
+void FixRigidAbrade::areas_and_normals() {
+
+  int i1, i2, i3, n, type;
+  double delx1, dely1, delz1, delx2, dely2, delz2;
+  double eangle, f1[3], f3[3];
+  double rsq1, rsq2, r1, r2, c, a, a11, a12, a22;
+  double axbi, axbj, axbk, area;
+  double centroid[3], se1[3], se2[3], se3[3];
+  double st[3], dots[3], abs[3];
+  double sub_area;
+  double norm1, norm2, norm3, length;
+  double n1, n2, n3;
+
+  double **x = atom->x;
+  double **f = atom->f;
+  int **anglelist = neighbor->anglelist;
+  int nanglelist = neighbor->nanglelist;
+  int nlocal = atom->nlocal;
+  int nghost = atom->nghost;
+  int newton_bond = force->newton_bond;
+
+  // Reset vertex data for local and ghost atoms -> since the ghost atoms may be be accessed when cycling through angles
+  for (int i = 0; i < nlocal + nghost; i++) {
+    vertexdata[i][0] = 0.0; // x normal
+    vertexdata[i][1] = 0.0; // y normal
+    vertexdata[i][2] = 0.0; // z normal
+    vertexdata[i][3] = 0.0; // associated area
+    vertexdata[i][4] = 0.0; // x displacement velocity
+    vertexdata[i][5] = 0.0; // y displacement velocity
+    vertexdata[i][6] = 0.0; // z displacement velocity
+  }
+
+  norm1 = 0.0;
+  norm2 = 0.0;
+  norm3 = 0.0;
+  sub_area = 0.0;
+
+  //  Storing each atom in each angle - Not currently specified to a single body (potential optimisation here if we were to only call areas and normals on bodies which have been abraded)
+  for (n = 0; n < nanglelist; n++) {
+    i1 = anglelist[n][0];
+    i2 = anglelist[n][1];
+    i3 = anglelist[n][2];
+    type = anglelist[n][3];
+
+    // 1st bond
+
+    delx1 = displace[i1][0] - displace[i2][0];
+    dely1 = displace[i1][1] - displace[i2][1];
+    delz1 = displace[i1][2] - displace[i2][2];
+
+    rsq1 = delx1 * delx1 + dely1 * dely1 + delz1 * delz1;
+    r1 = sqrt(rsq1);
+
+    // 2nd bond
+
+    delx2 = displace[i3][0] - displace[i2][0];
+    dely2 = displace[i3][1] - displace[i2][1];
+    delz2 = displace[i3][2] - displace[i2][2];
+
+    rsq2 = delx2 * delx2 + dely2 * dely2 + delz2 * delz2;
+    r2 = sqrt(rsq2);
+
+    // cross product
+    // a x b = (a2.b3 - a3.b2)i + (a3.b1 - a1.b3)j + (a1.b2 - a2.b1)k
+    // b is the first bond whilst a is the second bond.
+
+    axbi = dely2*delz1 - delz2*dely1;
+    axbj = delz2*delx1 - delx2*delz1;
+    axbk = delx2*dely1 - dely2*delx1;
+
+    // area of facet
+
+    area = sqrt(axbi*axbi + axbj*axbj + axbk*axbk); // actually 2*area
+
+    n1 = axbi/area;
+    n2 = axbj/area;
+    n3 = axbk/area;
+
+    // Centroid of the vertices making the current triangle
+    centroid[0] = (displace[i1][0] + displace[i2][0] + displace[i3][0])/3.0;
+    centroid[1] = (displace[i1][1] + displace[i2][1] + displace[i3][1])/3.0;
+    centroid[2] = (displace[i1][2] + displace[i2][2] + displace[i3][2])/3.0;
+
+    // Check that the normal points outwards from the centre of mass of the rigid body
+
+    // since we are using body coordinates, [0,0,0] is the COM of the respective body
+    
+    if  ((((centroid[0] - 0) * n1) + ((centroid[1] - 0) * n2) + ((centroid[2] - 0) * n3)) < 0) {
+      // Flip the normal if it is pointing the wrong way
+      n1 = -n1;
+      n2 = -n2;
+      n3 = -n3;
+      // std::cout << me << ": atom normal flipped" << std::endl;
+    }
+
+    // Sub-edge 1
+    se1[0] = displace[i1][0] - centroid[0];
+    se1[1] = displace[i1][1] - centroid[1];
+    se1[2] = displace[i1][2] - centroid[2];
+
+    // Sub-edge 2
+    se2[0] = displace[i2][0] - centroid[0];
+    se2[1] = displace[i2][1] - centroid[1];
+    se2[2] = displace[i2][2] - centroid[2];
+
+    // Sub-edge 3
+    se3[0] = displace[i3][0] - centroid[0];
+    se3[1] = displace[i3][1] - centroid[1];
+    se3[2] = displace[i3][2] - centroid[2];
+
+    // dots between sub-edges 1-2 2-3 3-1
+    dots[0] = MathExtra::dot3(se1, se2);
+    dots[1] = MathExtra::dot3(se2, se3);
+    dots[2] = MathExtra::dot3(se3, se1);
+
+    // absolute length of sub-edges
+    abs[0] = MathExtra::len3(se1);
+    abs[1] = MathExtra::len3(se2);
+    abs[2] = MathExtra::len3(se3);
+
+    // sin of the angle between sub-edges (from centroid to vertices)
+    // sin(theta) = sqrt(1 - cos(theta)^2), cos(theta) = dots / abs
+    st[0] = std::sqrt(1.0 - std::pow(dots[0]/(abs[0]*abs[1]),2));
+    st[1] = std::sqrt(1.0 - std::pow(dots[1]/(abs[1]*abs[2]),2));
+    st[2] = std::sqrt(1.0 - std::pow(dots[2]/(abs[2]*abs[0]),2));
+
+    // Half of each sub-triangle associated with each vertex
+    // A = 0.5 * se1 * se2 * st
+
+    sub_area = 0.25 * abs[0] * abs[1] * st[0];
+    vertexdata[i1][3] += sub_area;
+    vertexdata[i1][0] += n1*sub_area;
+    vertexdata[i1][1] += n2*sub_area;
+    vertexdata[i1][2] += n3*sub_area;
+    vertexdata[i2][3] += sub_area;
+    vertexdata[i2][0] += n1*sub_area;
+    vertexdata[i2][1] += n2*sub_area;
+    vertexdata[i2][2] += n3*sub_area;
+
+    sub_area = 0.25 * abs[1] * abs[2] * st[1];
+    vertexdata[i2][3] += sub_area;
+    vertexdata[i2][0] += n1*sub_area;
+    vertexdata[i2][1] += n2*sub_area;
+    vertexdata[i2][2] += n3*sub_area;
+    vertexdata[i3][3] += sub_area;
+    vertexdata[i3][0] += n1*sub_area;
+    vertexdata[i3][1] += n2*sub_area;
+    vertexdata[i3][2] += n3*sub_area;
+
+    sub_area = 0.25 * abs[2] * abs[0] * st[2];
+    vertexdata[i3][3] += sub_area;
+    vertexdata[i3][0] += n1*sub_area;
+    vertexdata[i3][1] += n2*sub_area;
+    vertexdata[i3][2] += n3*sub_area;
+    vertexdata[i1][3] += sub_area;
+    vertexdata[i1][0] += n1*sub_area;
+    vertexdata[i1][1] += n2*sub_area;
+    vertexdata[i1][2] += n3*sub_area;
+
+  }
+
+  for (int i = 0; i < nlocal; i++) {
+    if (vertexdata[i][3] > 0) {
+      norm1 = vertexdata[i][0];
+      norm2 = vertexdata[i][1];
+      norm3 = vertexdata[i][2];
+      length = sqrt(norm1*norm1 + norm2*norm2 + norm3*norm3);
+
+      // Normalising the length of the normals
+      double normals[3];
+      normals[0] = norm1/length;
+      normals[1] = norm2/length;
+      normals[2] = norm3/length; 
+
+      // Converting from body coordinates to global coordinates
+      // This allows for the normals to be outputed in the dump file and thus visualised in ovito
+      double global_normals[3];
+      Body *b = &body[atom2body[i]];
+      MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,normals,global_normals);
+      vertexdata[i][0] = global_normals[0];
+      vertexdata[i][1] = global_normals[1];
+      vertexdata[i][2] = global_normals[2];
+      
+    } else {
+      vertexdata[i][0] = 0.0;
+      vertexdata[i][1] = 0.0;
+      vertexdata[i][2] = 0.0;
+    }
+  }
 }
 
 
 /* ---------------------------------------------------------------------- */
+
+void FixRigidAbrade::displacement_of_atom(int i, int j, double x_rel[3], double v_rel[3]) {
+
+  // If normals were calculated in body coordinates they would have to be converted here 
+  double global_normals[3];
+  global_normals[0] = vertexdata[i][0];
+  global_normals[1] = vertexdata[i][1];
+  global_normals[2] = vertexdata[i][2];
+
+  // Checking if the normal and relative velocities are faceing towards oneanother, indicating the gap between i and j is closing
+  bool gap_is_shrinking = (MathExtra::dot3(v_rel, global_normals) < 0);
+
+  // If the atoms are moving away from one another then no abrasion occurs
+  if (!gap_is_shrinking) return;
+
+  // Calculating the effective radius of the two spheres
+  double r_eff = (atom->radius)[i] + (atom->radius)[j];
+
+  // Check that the atoms are in contact - This is necessary as otherwise atoms which are aproaching i can contribute to its abrasion even if they are on the other side of the simulation
+  if (MathExtra::len3(x_rel) > r_eff) return;
+
+  // Storing area associated with atom i (equal in both body and global coords)
+  double associated_area = vertexdata[i][3];
+
+  // Accessing atom properties in global coords
+  double **f = atom->f;
+  double **x = atom->x;
+  double **v = atom->v;
+
+  // Calculating the scalar product of force on atom i and the normal to i
+  double fnorm = f[i][0]*global_normals[0] + f[i][1]*global_normals[1] + f[i][2]*global_normals[2];
+
+  // Checking for indentation (is the normal force greater than the normal hardness * area associated with atom i)
+  bool indentation = abs(fnorm) > abs(hardness*associated_area);
+
+  // Calculating the components of force on i tangential to i
+  double f_tan[3];
+  f_tan[0] = f[i][0] - fnorm * global_normals[0];
+  f_tan[1] = f[i][1] - fnorm * global_normals[1];
+  f_tan[2] = f[i][2] - fnorm * global_normals[2];
+
+  // Calculating magnitude of force tangential to i
+  double ftan = MathExtra::len3(f_tan);
+
+
+  // Checking for scratching (is the tangential force greater than the tangential hardness * area associated with atom i)
+  bool scratching = abs(ftan) > abs(hardness*fric_coeff*associated_area);
+  
+  // Calculating scalar product of particle velocity and the normal to i
+  double vnorm;
+  vnorm = v_rel[0]*global_normals[0] + v_rel[1]*global_normals[1] + v_rel[2]*global_normals[2];
+
+  // Calculating the component of velocity normal to i
+  double v_norm[3];
+  v_norm[0] = vnorm * global_normals[0];
+  v_norm[1] = vnorm * global_normals[1];
+  v_norm[2] = vnorm * global_normals[2];
+
+  // Calculating the component of velocity tangential to i
+  double v_tan[3];
+  v_tan[0] = v_rel[0] - vnorm * global_normals[0];
+  v_tan[1] = v_rel[1] - vnorm * global_normals[1];
+  v_tan[2] = v_rel[2] - vnorm * global_normals[2];
+
+  // Calculating normal indentation depth
+  double deltah;
+  deltah = vnorm * update->dt;
+
+  // Calculating tangential indentation depth
+  double deltas;
+  deltas = MathExtra::len3(v_tan) * update->dt;
+
+  // Per atom indetation depth
+  double htp;
+  htp = (x[i][0]*global_normals[0] + x[i][1]*global_normals[1] + x[i][2]*global_normals[2]) - (x[j][0]*global_normals[0] + x[j][1]*global_normals[1] + x[j][2]*global_normals[2] - r_eff);
+  // Calculate the normal displacement corresponding to deltas
+  double dsh;
+  dsh = htp - r_eff + sqrt(((r_eff - htp)*(r_eff - htp)) + 2*sqrt(abs(2*r_eff*htp - htp*htp)) * deltas);
+  // Verify that the indentation depth is positive
+  bool hl = htp > 0;
+
+  // Calculate total normal displacement
+  double total_normal_displacement;
+  total_normal_displacement = (indentation * deltah) - (scratching * hl * dsh);
+
+  // Calculate the total displacement speed in global coordinates
+  double displacement_speed;
+  displacement_speed = (total_normal_displacement / update->dt);
+
+  // Assign displacement velocities, alligned normally, to atom i in global coordinates
+  // Since we are cylcing over all neighbours to i, each can contribute independently to the abrasion of i
+  vertexdata[i][4] += displacement_speed * global_normals[0];
+  vertexdata[i][5] += displacement_speed * global_normals[1];
+  vertexdata[i][6] += displacement_speed * global_normals[2];
+}
+
+/* ---------------------------------------------------------------------- */
+
 
 void FixRigidAbrade::compute_forces_and_torques()
 {
@@ -1058,7 +1463,7 @@ void FixRigidAbrade::compute_forces_and_torques()
       fcm[0] += gvec[0]*mass;
       fcm[1] += gvec[1]*mass;
       fcm[2] += gvec[2]*mass;
-    }
+      }
   }
 }
 
@@ -1103,6 +1508,103 @@ void FixRigidAbrade::final_integrate()
   // virial is already setup from initial_integrate
 
   set_v();
+
+    // Integrate the body postitions, stored in displace[i], by their calculated displacement velocities to move atoms within the body
+  // This is placed in the final integration step after the centre of mass of each body has been integrated. Thus, atoms are displaced with respect the updated COM position.
+
+  double **x = atom->x;
+  int nlocal = atom->nlocal;
+  double global_displace_vel[3];
+  double body_displace_vel[3];
+  double global_normal[3];
+  double body_normal[3];
+  
+
+  int nanglelist = neighbor->nanglelist;
+  int **anglelist = neighbor->anglelist;
+
+// Cycle through all angles and assign atom2body and xcmimage to their ghost atoms
+  for (int n=0; n<nanglelist; n++){  
+
+  // Cycle through atoms in angle
+    for (int i = 0; i < 3; i++){
+        
+        // Check if i is a ghost atom
+        if (anglelist[n][i] >= nlocal){
+
+        // Check if it exists for the other atoms in the angle and set its value
+        for (int j = 1; j < 3; j++){
+          if (anglelist[n][(i+j)%3] < nlocal) {
+            atom2body[anglelist[n][i]] = atom2body[anglelist[n][(i+j)%3]];
+            xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
+            }
+          }
+        }
+      // Check if all angle atoms have a xcm
+      if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
+    }
+
+      // Check if all atoms in the angle think they belong to the same body
+      if (!((atom2body[anglelist[n][0]] == atom2body[anglelist[n][1]]) && (atom2body[anglelist[n][0]] == atom2body[anglelist[n][2]])))
+      error->all(FLERR, "atom2body not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
+  }
+
+  for (int i = 0; i < nlocal; i++) {
+    
+    // Checking that atom i is in a rigid body
+    if (atom2body[i] < 0) continue;
+    
+    // Checking that atom i is being abraded
+    global_displace_vel[0] = vertexdata[i][4];
+    global_displace_vel[1] = vertexdata[i][5];
+    global_displace_vel[2] = vertexdata[i][6];
+    if (!MathExtra::len3(global_displace_vel)) continue;
+    
+    // Convert displacement velocities from global coordinates to body coordinates 
+    Body *b = &body[atom2body[i]];
+    MathExtra::transpose_matvec(b->ex_space,b->ey_space,b->ez_space, global_displace_vel, body_displace_vel);
+
+    // Integrate the position of atom i within the body by its displacement velocity
+    displace[i][0] += dtv * body_displace_vel[0];
+    displace[i][1] += dtv * body_displace_vel[1];
+    displace[i][2] += dtv * body_displace_vel[2];
+
+    // Convert the postiion of atom i from  back body coordinates to global coordinates 
+    MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,displace[i],x[i]);
+
+    // This transormation is with respect to (0,0,0) in the global coordinate space, so we need to translate the position of atom i by the postition of its body's COM
+    // Additionally, we map back into periodic box via xbox,ybox,zbox
+    // same for triclinic, we add in box tilt factors as well
+    
+    int xbox,ybox,zbox;
+    double xprd = domain->xprd;
+    double yprd = domain->yprd;
+    double zprd = domain->zprd;
+
+    double xy = domain->xy;
+    double xz = domain->xz;
+    double yz = domain->yz;
+    
+    xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
+    ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
+    zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
+
+    // add center of mass to displacement
+    if (triclinic == 0) {
+      x[i][0] += b->xcm[0] - xbox*xprd;
+      x[i][1] += b->xcm[1] - ybox*yprd;
+      x[i][2] += b->xcm[2] - zbox*zprd;
+    } else {
+      x[i][0] += b->xcm[0] - xbox*xprd - ybox*xy - zbox*xz;
+      x[i][1] += b->xcm[1] - ybox*yprd - zbox*yz;
+      x[i][2] += b->xcm[2] - zbox*zprd;
+    }
+  }
+
+// forward communicate displace[i] to ghost atoms on neighbouring processors
+  commflag = DISPLACE;
+  comm->forward_comm(this,3);
+
 }
 
 /* ---------------------------------------------------------------------- */
@@ -2026,7 +2528,7 @@ void FixRigidAbrade::setup_bodies_static()
         // Check if it exists for the other atoms in the angle and set its value
         for (int j = 1; j < 3; j++){
           if (anglelist[n][(i+j)%3] < nlocal) {
-            atom2body[anglelist[n][i]] = atom2body[anglelist[n][(i+j)%3]];
+            atom2body[ anglelist[n][i] ] = atom2body[ anglelist[n][(i+j)%3]];
             xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
             }
           }
@@ -2074,7 +2576,7 @@ void FixRigidAbrade::setup_bodies_static()
   std::cout << " ---------------------- " << nlocal_body << " bodies owned by proc " << me << " ---------------------- "  << std::endl;
   
   for (ibody = 0; ibody < nlocal_body; ibody++) {
-    if ((std::ceil(body[ibody].volume * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].volume * 1000.0) / 1000.0)) {std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << std::endl;}
+    if ((std::ceil(body[ibody].volume * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].volume * 10.0) / 10.0)) {std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << std::endl;}
 }
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
@@ -2472,9 +2974,9 @@ void FixRigidAbrade::setup_bodies_static()
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     // std::cout << me << ": testing body " << ibody << std::endl;
     if (
-      (std::ceil(body[ibody].inertia[0] * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[0] * 1000.0) / 1000.0) ||
-      (std::ceil(body[ibody].inertia[1] * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[1] * 1000.0) / 1000.0) ||
-      (std::ceil(body[ibody].inertia[2] * 1000.0) / 1000.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[2] * 1000.0) / 1000.0) 
+      (std::ceil(body[ibody].inertia[0] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[0] * 10.0) / 10.0) ||
+      (std::ceil(body[ibody].inertia[1] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[1] * 10.0) / 10.0) ||
+      (std::ceil(body[ibody].inertia[2] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[2] * 10.0) / 10.0) 
       ) {std::cout << me << ": Dissagreement with Body " << ibody << " inertia: (" << body[ibody].inertia[0] << ", "  << body[ibody].inertia[1] << ", "  << body[ibody].inertia[2] << ") Volume: " <<  body[ibody].volume << " density: "<< body[ibody].density << std::endl;}
     
 }
@@ -3105,9 +3607,9 @@ int FixRigidAbrade::pack_exchange(int i, double *buf)
   for (int q = 0; q < size_peratom_cols; q++){
   buf[5+q] = vertexdata[i][q];}
 
-  // extended attribute info
 
-  int m = 5;
+  // extended attribute info
+  int m = 5 + size_peratom_cols;
   if (extended) {
     buf[m++] = eflags[i];
     for (int j = 0; j < orientflag; j++)
@@ -3162,7 +3664,7 @@ int FixRigidAbrade::unpack_exchange(int nlocal, double *buf)
 
   // extended attribute info
 
-  int m = 5;
+  int m = 5 + size_peratom_cols;
   if (extended) {
     eflags[nlocal] = static_cast<int> (buf[m++]);
     for (int j = 0; j < orientflag; j++)
