@@ -1025,7 +1025,7 @@ void FixRigidAbrade::post_force(int /*vflag*/)
   
   areas_and_normals();
 
-  // Don't need to reverse communicate normals since they are only used for atom i which is local 
+  // Don't need to forward communicate normals to ghost atoms since they are only used for atom i which is local 
 
   // loop over central atoms in neighbor lists 
   for (int ii = 0; ii < inum; ii ++){
@@ -1052,8 +1052,8 @@ void FixRigidAbrade::post_force(int /*vflag*/)
     // get local index of neighbor to access its properties (j maybe a ghost atom)
     int j = jlist[jj];
 
-    // check that the atoms are not in the same body
-    if (atom2body[i] != atom2body[j]){
+    // check that the atoms are not in the same body - need atom2body for all ghost atoms (not just those in local angles) to be set for this to work
+    // if (atom2body[i] != atom2body[j]){
     
     // Calculating the relative position of i and j in global coordinates
     // Position and velocity of ghost atoms should already be stored for granular simulations
@@ -1068,13 +1068,10 @@ void FixRigidAbrade::post_force(int /*vflag*/)
     // Calculate the displacement on atom i from an impact by j
     displacement_of_atom(i, j, x_rel, v_rel);
     // std::cout << "Total displacement of atom " << atom->tag[i] << ": (" << vertexdata[i][4] << ", " << 
-        }
+        // }
       }
     }
   }
-
-  // reverse communicate displacement velocities to all atoms 
-
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1240,6 +1237,10 @@ void FixRigidAbrade::areas_and_normals() {
     vertexdata[i1][2] += n3*sub_area;
 
   }
+
+  // reverse communicate contribution to normals of ghost atoms
+  commflag = NORMALS;
+  comm->reverse_comm(this,4);
 
   for (int i = 0; i < nlocal; i++) {
     if (vertexdata[i][3] > 0) {
@@ -3975,7 +3976,15 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
       buf[m++] = itensor[j][5];
     }
 
-  } else if (commflag == DOF) {
+  } else if (commflag == NORMALS) {
+    for (i = first; i < last; i++) {
+      buf[m++] = vertexdata[i][0];
+      buf[m++] = vertexdata[i][1];
+      buf[m++] = vertexdata[i][2];
+      buf[m++] = vertexdata[i][3];
+    }
+
+  }else if (commflag == DOF) {
     for (i = first; i < last; i++) {
       if (bodyown[i] < 0) continue;
       j = bodyown[i];
@@ -4056,6 +4065,15 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
       itensor[k][3] += buf[m++];
       itensor[k][4] += buf[m++];
       itensor[k][5] += buf[m++];
+    }
+
+  } else if (commflag == NORMALS) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      vertexdata[j][0] += buf[m++];
+      vertexdata[j][1] += buf[m++];
+      vertexdata[j][2] += buf[m++];
+      vertexdata[j][3] += buf[m++];
     }
 
   } else if (commflag == DOF) {
