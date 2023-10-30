@@ -1521,34 +1521,34 @@ void FixRigidAbrade::final_integrate()
   double body_normal[3];
   
 
-  int nanglelist = neighbor->nanglelist;
-  int **anglelist = neighbor->anglelist;
+//   int nanglelist = neighbor->nanglelist;
+//   int **anglelist = neighbor->anglelist;
 
-// Cycle through all angles and assign atom2body and xcmimage to their ghost atoms
-  for (int n=0; n<nanglelist; n++){  
+// // Cycle through all angles and assign atom2body and xcmimage to their ghost atoms
+//   for (int n=0; n<nanglelist; n++){  
 
-  // Cycle through atoms in angle
-    for (int i = 0; i < 3; i++){
+//   // Cycle through atoms in angle
+//     for (int i = 0; i < 3; i++){
         
-        // Check if i is a ghost atom
-        if (anglelist[n][i] >= nlocal){
+//         // Check if i is a ghost atom
+//         if (anglelist[n][i] >= nlocal){
 
-        // Check if it exists for the other atoms in the angle and set its value
-        for (int j = 1; j < 3; j++){
-          if (anglelist[n][(i+j)%3] < nlocal) {
-            atom2body[anglelist[n][i]] = atom2body[anglelist[n][(i+j)%3]];
-            xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
-            }
-          }
-        }
-      // Check if all angle atoms have a xcm
-      if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
-    }
+//         // Check if it exists for the other atoms in the angle and set its value
+//         for (int j = 1; j < 3; j++){
+//           if (anglelist[n][(i+j)%3] < nlocal) {
+//             atom2body[anglelist[n][i]] = atom2body[anglelist[n][(i+j)%3]];
+//             xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
+//             }
+//           }
+//         }
+//       // Check if all angle atoms have a xcm
+//       if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
+//     }
 
-      // Check if all atoms in the angle think they belong to the same body
-      if (!((atom2body[anglelist[n][0]] == atom2body[anglelist[n][1]]) && (atom2body[anglelist[n][0]] == atom2body[anglelist[n][2]])))
-      error->all(FLERR, "atom2body not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
-  }
+//       // Check if all atoms in the angle think they belong to the same body
+//       if (!((atom2body[anglelist[n][0]] == atom2body[anglelist[n][1]]) && (atom2body[anglelist[n][0]] == atom2body[anglelist[n][2]])))
+//       error->all(FLERR, "atom2body not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
+//   }
 
   for (int i = 0; i < nlocal; i++) {
     
