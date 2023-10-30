@@ -84,7 +84,7 @@ private:
   int triclinic;
   
   // Modified Commflags
-  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM_ANGMOM, XCM_MASS, DISPLACE, ITENSOR, DOF};
+  enum{FULL_BODY, INITIAL, XCMIMAGE, FINAL, FORCE_TORQUE, VCM_ANGMOM, XCM_MASS, DISPLACE, NORMALS, ITENSOR, DOF};
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
