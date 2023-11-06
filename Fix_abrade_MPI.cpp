@@ -1009,7 +1009,7 @@ void FixRigidAbrade::post_force(int /*vflag*/)
         // Check if it exists for the other atoms in the angle and set its value
         for (int j = 1; j < 3; j++){
           if (anglelist[n][(i+j)%3] < nlocal) {
-            atom2body[anglelist[n][i]] = atom2body[anglelist[n][(i+j)%3]];
+            // atom2body[anglelist[n][i]] = atom2body[anglelist[n][(i+j)%3]];
             xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
             }
           }
@@ -1053,7 +1053,7 @@ void FixRigidAbrade::post_force(int /*vflag*/)
     int j = jlist[jj];
 
     // check that the atoms are not in the same body - need atom2body for all ghost atoms (not just those in local angles) to be set for this to work
-    // if (atom2body[i] != atom2body[j]){
+    if (bodytag[i] != bodytag[j]){
     
     // Calculating the relative position of i and j in global coordinates
     // Position and velocity of ghost atoms should already be stored for granular simulations
@@ -1068,7 +1068,7 @@ void FixRigidAbrade::post_force(int /*vflag*/)
     // Calculate the displacement on atom i from an impact by j
     displacement_of_atom(i, j, x_rel, v_rel);
     // std::cout << "Total displacement of atom " << atom->tag[i] << ": (" << vertexdata[i][4] << ", " << 
-        // }
+        }
       }
     }
   }
@@ -2529,7 +2529,7 @@ void FixRigidAbrade::setup_bodies_static()
         // Check if it exists for the other atoms in the angle and set its value
         for (int j = 1; j < 3; j++){
           if (anglelist[n][(i+j)%3] < nlocal) {
-            atom2body[ anglelist[n][i] ] = atom2body[ anglelist[n][(i+j)%3]];
+            // atom2body[ anglelist[n][i] ] = atom2body[ anglelist[n][(i+j)%3]];
             xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
             }
           }
@@ -2577,7 +2577,9 @@ void FixRigidAbrade::setup_bodies_static()
   std::cout << " ---------------------- " << nlocal_body << " bodies owned by proc " << me << " ---------------------- "  << std::endl;
   
   for (ibody = 0; ibody < nlocal_body; ibody++) {
-    if ((std::ceil(body[ibody].volume * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].volume * 10.0) / 10.0)) {std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << std::endl;}
+    // if ((std::ceil(body[ibody].volume * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].volume * 10.0) / 10.0)) {
+      std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << std::endl;
+    // }
 }
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
@@ -2647,7 +2649,7 @@ void FixRigidAbrade::setup_bodies_static()
         // Check if it exists for the other atoms in the angle and set its value
         for (int j = 1; j < 3; j++){
           if (anglelist[n][(i+j)%3] < nlocal) {
-            atom2body[anglelist[n][i]] = atom2body[anglelist[n][(i+j)%3]];
+            //  atom2body[anglelist[n][i]] = atom2body[anglelist[n][(i+j)%3]];
             xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
             }
           }
@@ -3794,7 +3796,13 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
       buf[m++] = displace[j][2];
     }
 
-  } else if (commflag == FULL_BODY) {
+  } else if (commflag == BODYTAG) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      buf[m++] = bodytag[j];
+    }
+
+  }else if (commflag == FULL_BODY) {
     for (i = 0; i < n; i++) {
       j = list[i];
       if (bodyown[j] < 0) buf[m++] = 0;
@@ -3889,6 +3897,11 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
       displace[i][0] = buf[m++];
       displace[i][1] = buf[m++];
       displace[i][2] = buf[m++];
+    }
+
+  } else if (commflag == BODYTAG) {
+    for (i = first; i < last; i++) {
+      bodytag[i] = buf[m++];
     }
 
   } else if (commflag == FULL_BODY) {
@@ -4109,11 +4122,15 @@ void FixRigidAbrade::reset_atom2body()
 {
   int iowner;
 
+  // forward communicate bodytag[i] for ghost atoms
+  commflag = BODYTAG;
+  comm->forward_comm(this,1);
+
   // iowner = index of atom that owns the body that atom I is in
-
   int nlocal = atom->nlocal;
+  int nghost = atom->nghost;
 
-  for (int i = 0; i < nlocal; i++) {
+  for (int i = 0; i < (nlocal + nghost); i++) {
     atom2body[i] = -1;
     if (bodytag[i]) {
       iowner = atom->map(bodytag[i]);
