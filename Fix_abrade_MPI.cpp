@@ -993,39 +993,14 @@ void FixRigidAbrade::post_force(int /*vflag*/)
   // Uses displace[i] of ghost atoms which will need to be forward communicated each time
   commflag = DISPLACE;
   comm->forward_comm(this,3);
-
-  int nanglelist = neighbor->nanglelist;
-  int **anglelist = neighbor->anglelist;
-
-// Cycle through all angles and assign atom2body and xcmimage to their ghost atoms
-  for (int n=0; n<nanglelist; n++){  
-
-  // Cycle through atoms in angle
-    for (int i = 0; i < 3; i++){
-        
-        // Check if i is a ghost atom
-        if (anglelist[n][i] >= nlocal){
-
-        // Check if it exists for the other atoms in the angle and set its value
-        for (int j = 1; j < 3; j++){
-          if (anglelist[n][(i+j)%3] < nlocal) {
-            // atom2body[anglelist[n][i]] = atom2body[anglelist[n][(i+j)%3]];
-            xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
-            }
-          }
-        }
-      // Check if all angle atoms have a xcm
-      if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
-    }
-
-      // Check if all atoms in the angle think they belong to the same body
-      if (!((atom2body[anglelist[n][0]] == atom2body[anglelist[n][1]]) && (atom2body[anglelist[n][0]] == atom2body[anglelist[n][2]])))
-      error->all(FLERR, "atom2body not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
-  }
   
   areas_and_normals();
 
   // Don't need to forward communicate normals to ghost atoms since they are only used for atom i which is local 
+  
+  // Forward communicate bodytag to check if an atom and its neighbour (possibly a ghost atom) are in the same body
+  commflag = BODYTAG;
+  comm->forward_comm(this,1);
 
   // loop over central atoms in neighbor lists 
   for (int ii = 0; ii < inum; ii ++){
@@ -1510,7 +1485,7 @@ void FixRigidAbrade::final_integrate()
 
   set_v();
 
-    // Integrate the body postitions, stored in displace[i], by their calculated displacement velocities to move atoms within the body
+  // Integrate the body postitions, stored in displace[i], by their calculated displacement velocities to move atoms within the body
   // This is placed in the final integration step after the centre of mass of each body has been integrated. Thus, atoms are displaced with respect the updated COM position.
 
   double **x = atom->x;
@@ -1519,36 +1494,6 @@ void FixRigidAbrade::final_integrate()
   double body_displace_vel[3];
   double global_normal[3];
   double body_normal[3];
-  
-
-//   int nanglelist = neighbor->nanglelist;
-//   int **anglelist = neighbor->anglelist;
-
-// // Cycle through all angles and assign atom2body and xcmimage to their ghost atoms
-//   for (int n=0; n<nanglelist; n++){  
-
-//   // Cycle through atoms in angle
-//     for (int i = 0; i < 3; i++){
-        
-//         // Check if i is a ghost atom
-//         if (anglelist[n][i] >= nlocal){
-
-//         // Check if it exists for the other atoms in the angle and set its value
-//         for (int j = 1; j < 3; j++){
-//           if (anglelist[n][(i+j)%3] < nlocal) {
-//             atom2body[anglelist[n][i]] = atom2body[anglelist[n][(i+j)%3]];
-//             xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
-//             }
-//           }
-//         }
-//       // Check if all angle atoms have a xcm
-//       if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
-//     }
-
-//       // Check if all atoms in the angle think they belong to the same body
-//       if (!((atom2body[anglelist[n][0]] == atom2body[anglelist[n][1]]) && (atom2body[anglelist[n][0]] == atom2body[anglelist[n][2]])))
-//       error->all(FLERR, "atom2body not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
-//   }
 
   for (int i = 0; i < nlocal; i++) {
     
@@ -2517,19 +2462,16 @@ void FixRigidAbrade::setup_bodies_static()
   
   int i1, i2, i3;
   
-// Cycle through all angles and assign atom2body and xcmimage to their ghost atoms
+// Cycle through all angles and assign xcmimage to their ghost atoms
   for (int n=0; n<nanglelist; n++){  
-
+    
   // Cycle through atoms in angle
     for (int i = 0; i < 3; i++){
-        
         // Check if i is a ghost atom
         if (anglelist[n][i] >= nlocal){
-
         // Check if it exists for the other atoms in the angle and set its value
         for (int j = 1; j < 3; j++){
           if (anglelist[n][(i+j)%3] < nlocal) {
-            // atom2body[ anglelist[n][i] ] = atom2body[ anglelist[n][(i+j)%3]];
             xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
             }
           }
@@ -2537,12 +2479,7 @@ void FixRigidAbrade::setup_bodies_static()
       // Check if all angle atoms have a xcm
       if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
     }
-
-      // Check if all atoms in the angle think they belong to the same body
-      if (!((atom2body[anglelist[n][0]] == atom2body[anglelist[n][1]]) && (atom2body[anglelist[n][0]] == atom2body[anglelist[n][2]])))
-      error->all(FLERR, "atom2body not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
   }
-
 
   for (int n = 0; n < nanglelist; n++) {
       if (atom2body[anglelist[n][0]] < 0) continue;
@@ -2634,35 +2571,6 @@ void FixRigidAbrade::setup_bodies_static()
   //   and reset body and atom xcmimage flags via pre_neighbor()
 
   pre_neighbor();
-
-// Since atom2body and xcmimage have been reset, we need to reassign them to the ghost atoms
-
-// Cycle through all angles and assign atom2body and xcmimage to their ghost atoms
-  for (int n=0; n<nanglelist; n++){  
-
-  // Cycle through atoms in angle
-    for (int i = 0; i < 3; i++){
-        
-        // Check if i is a ghost atom
-        if (anglelist[n][i] >= nlocal){
-
-        // Check if it exists for the other atoms in the angle and set its value
-        for (int j = 1; j < 3; j++){
-          if (anglelist[n][(i+j)%3] < nlocal) {
-            //  atom2body[anglelist[n][i]] = atom2body[anglelist[n][(i+j)%3]];
-            xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
-            }
-          }
-        }
-      // Check if all angle atoms have a xcm
-      if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
-    }
-
-      // Check if all atoms in the angle think they belong to the same body
-      if (!((atom2body[anglelist[n][0]] == atom2body[anglelist[n][1]]) && (atom2body[anglelist[n][0]] == atom2body[anglelist[n][2]])))
-      error->all(FLERR, "atom2body not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
-  }
-  
 
   // compute 6 moments of inertia of each body in Cartesian reference frame
   // dx,dy,dz = coords relative to center-of-mass
