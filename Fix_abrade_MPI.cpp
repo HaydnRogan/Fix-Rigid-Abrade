@@ -105,7 +105,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   atom->add_callback(Atom::RESTART);
 
   // Set initial vertexdata values to zero
-  for (int i = 0; i < atom->nlocal; i++) {
+  for (int i = 0; i < (atom->nlocal + atom->nghost); i++) {
     vertexdata[i][0] = vertexdata[i][1] = vertexdata[i][2] = 0.0;
     vertexdata[i][3] = 0.0;
     vertexdata[i][4] = vertexdata[i][5] = vertexdata[i][6] = 0.0;
@@ -116,10 +116,10 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   tagint *bodyID = nullptr;
   int nlocal = atom->nlocal;
 
-    if (narg < 6) error->all(FLERR,"1 Illegal fix rigid/shell command");
+    if (narg < 7) error->all(FLERR,"1 Illegal fix rigid/shell command");
   
-  hstr = mustr = nullptr;
-  hstyle = mustyle = CONSTANT;
+  hstr = mustr = densitystr = nullptr;
+  hstyle = mustyle = densitystyle = CONSTANT;
 
 
   if (utils::strmatch(arg[3],"^v_")) {
@@ -138,22 +138,30 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
     fric_coeff = utils::numeric(FLERR,arg[4],false,lmp);
     mustyle = CONSTANT;
   }
-
-  if (strcmp(arg[5],"molecule") == 0) {
+  if (utils::strmatch(arg[5],"^v_")) {
+      densitystr = utils::strdup(arg[5]+2);
+      densitystyle = EQUAL;
+    } else {
+      density = utils::numeric(FLERR,arg[5],false,lmp);
+      // Convert units
+      density /= force->mv2d;
+      densitystyle = CONSTANT;
+    }
+  if (strcmp(arg[6],"molecule") == 0) {
     if (atom->molecule_flag == 0)
       error->all(FLERR,"Fix rigid/shell requires atom attribute molecule");
     bodyID = atom->molecule;
 
-  } else if (strcmp(arg[5],"custom") == 0) {
-    if (narg < 7) error->all(FLERR,"2 Illegal fix rigid/shell command");
+  } else if (strcmp(arg[6],"custom") == 0) {
+    if (narg < 8) error->all(FLERR,"2 Illegal fix rigid/shell command");
       bodyID = new tagint[nlocal];
       customflag = 1;
 
       // determine whether atom-style variable or atom property is used
 
-      if (utils::strmatch(arg[6],"^i_")) {
+      if (utils::strmatch(arg[7],"^i_")) {
         int is_double,cols;
-        int custom_index = atom->find_custom(arg[6]+2,is_double,cols);
+        int custom_index = atom->find_custom(arg[7]+2,is_double,cols);
         if (custom_index == -1)
           error->all(FLERR,"Fix rigid/shell custom requires previously defined property/atom");
         else if (is_double || cols)
@@ -170,13 +178,13 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
             bodyID[i] = (tagint)(value[i] - minval + 1);
           else bodyID[i] = 0;
 
-      } else if (utils::strmatch(arg[6],"^v_")) {
-        int ivariable = input->variable->find(arg[6]+2);
+      } else if (utils::strmatch(arg[7],"^v_")) {
+        int ivariable = input->variable->find(arg[7]+2);
         if (ivariable < 0)
-          error->all(FLERR,"Variable {} for fix rigid/shell custom does not exist", arg[6]+2);
+          error->all(FLERR,"Variable {} for fix rigid/shell custom does not exist", arg[7]+2);
         if (input->variable->atomstyle(ivariable) == 0)
           error->all(FLERR,"Fix rigid/shell custom variable {} is not atom-style variable",
-                     arg[6]+2);
+                     arg[7]+2);
         auto value = new double[nlocal];
         input->variable->compute_atom(ivariable,0,value,1,0);
         int minval = INT_MAX;
@@ -236,7 +244,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
 
 
 
-  int iarg = 6;
+  int iarg = 7;
   if (customflag) ++iarg;
 
   while (iarg < narg) {
@@ -516,7 +524,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
 
 
   varflag = CONSTANT;
-  if (hstyle != CONSTANT || mustyle != CONSTANT) varflag = EQUAL;
+  if (hstyle != CONSTANT || mustyle != CONSTANT || densitystyle != CONSTANT) varflag = EQUAL;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -606,6 +614,13 @@ void FixRigidAbrade::init()
       if (muvar < 0)
         error->all(FLERR,"Variable name for fix rigid/shell does not exist");
       if (!input->variable->equalstyle(muvar))
+        error->all(FLERR,"Variable for fix rigid/shell is invalid style");
+    }
+     if (densitystr) {
+      densityvar = input->variable->find(densitystr);
+      if (densityvar < 0)
+        error->all(FLERR,"Variable name for fix rigid/shell does not exist");
+      if (!input->variable->equalstyle(densityvar))
         error->all(FLERR,"Variable for fix rigid/shell is invalid style");
     }
     
@@ -970,6 +985,7 @@ void FixRigidAbrade::post_force(int /*vflag*/)
     modify->clearstep_compute();
     if (hstyle == EQUAL) hardness = input->variable->compute_equal(hvar);
     if (mustyle == EQUAL) fric_coeff = input->variable->compute_equal(muvar);
+    if (densitystyle == EQUAL) density = input->variable->compute_equal(densityvar);
     modify->addstep_compute(update->ntimestep + 1);
   }
 
@@ -1042,7 +1058,6 @@ void FixRigidAbrade::post_force(int /*vflag*/)
 
     // Calculate the displacement on atom i from an impact by j
     displacement_of_atom(i, j, x_rel, v_rel);
-    // std::cout << "Total displacement of atom " << atom->tag[i] << ": (" << vertexdata[i][4] << ", " << 
         }
       }
     }
@@ -1074,7 +1089,7 @@ void FixRigidAbrade::areas_and_normals() {
   int newton_bond = force->newton_bond;
 
   // Reset vertex data for local and ghost atoms -> since the ghost atoms may be be accessed when cycling through angles
-  for (int i = 0; i < nlocal + nghost; i++) {
+  for (int i = 0; i < (nlocal + nghost); i++) {
     vertexdata[i][0] = 0.0; // x normal
     vertexdata[i][1] = 0.0; // y normal
     vertexdata[i][2] = 0.0; // z normal
@@ -2469,7 +2484,8 @@ void FixRigidAbrade::setup_bodies_static()
     for (int i = 0; i < 3; i++){
         // Check if i is a ghost atom
         if (anglelist[n][i] >= nlocal){
-        // Check if it exists for the other atoms in the angle and set its value
+        
+        // Check if it exists for the other atoms in the angle and set its value equal to that 
         for (int j = 1; j < 3; j++){
           if (anglelist[n][(i+j)%3] < nlocal) {
             xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
@@ -2509,7 +2525,7 @@ void FixRigidAbrade::setup_bodies_static()
 
   // reverse communicate xcm, mass of all bodies
   commflag = XCM_MASS;
-  comm->reverse_comm(this,10);
+  comm->reverse_comm(this,9);
 
   std::cout << " ---------------------- " << nlocal_body << " bodies owned by proc " << me << " ---------------------- "  << std::endl;
   
@@ -2524,6 +2540,8 @@ void FixRigidAbrade::setup_bodies_static()
     xgc = body[ibody].xgc;
 
     // Setting each bodies' density and COM
+    // body[ibody].density = density;
+    // body[ibody].mass = body[ibody].volume * body[ibody].density;
     body[ibody].density = body[ibody].mass/body[ibody].volume;
     xcm[0] /= body[ibody].volume;
     xcm[1] /= body[ibody].volume;
@@ -2532,6 +2550,19 @@ void FixRigidAbrade::setup_bodies_static()
     xgc[1] /= body[ibody].volume;
     xgc[2] /= body[ibody].volume;
   }
+
+
+// // Cycling through the local atoms and setting their mass to the respective (body mass/natoms)
+//   for (i = 0; i < nlocal; i++) {
+//     if (atom2body[i] < 0) continue;
+//     Body *b = &body[atom2body[i]];
+//     rmass[i] = b->mass / b->natoms;
+//   }
+
+//   // Forward communicating the atom masses to ghost atoms
+//   commflag = ATOM_MASS;
+//   comm->forward_comm(this,1);
+
 
   // set vcm, angmom = 0.0 in case inpfile is used
   // and doesn't overwrite all body's values
@@ -2881,14 +2912,14 @@ void FixRigidAbrade::setup_bodies_static()
   commflag = ITENSOR;
   comm->reverse_comm(this,6);
 
-  if (nlocal_body > 0)std::cout << me << ": Body " << 0 << " inertia: (" << body[0].inertia[0] << ", "  << body[0].inertia[1] << ", "  << body[0].inertia[2] << ") Volume: " <<  body[0].volume << " density: "<< body[0].density << std::endl;
+  if (nlocal_body > 0)std::cout << me << ": Body " << 0 << " inertia: (" << body[0].inertia[0] << ", "  << body[0].inertia[1] << ", "  << body[0].inertia[2] << ") Volume: " <<  body[0].volume << " Mass: " <<  body[0].mass <<" Density: "<< body[0].density << std::endl;
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     // std::cout << me << ": testing body " << ibody << std::endl;
     if (
       (std::ceil(body[ibody].inertia[0] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[0] * 10.0) / 10.0) ||
       (std::ceil(body[ibody].inertia[1] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[1] * 10.0) / 10.0) ||
       (std::ceil(body[ibody].inertia[2] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[2] * 10.0) / 10.0) 
-      ) {std::cout << me << ": Dissagreement with Body " << ibody << " inertia: (" << body[ibody].inertia[0] << ", "  << body[ibody].inertia[1] << ", "  << body[ibody].inertia[2] << ") Volume: " <<  body[ibody].volume << " density: "<< body[ibody].density << std::endl;}
+      ) {std::cout << me << ": Dissagreement with Body " << ibody << " inertia: (" << body[ibody].inertia[0] << ", "  << body[ibody].inertia[1] << ", "  << body[ibody].inertia[2] << ") Volume: " <<  body[ibody].volume << " Mass: " <<  body[ibody].mass << " Density: "<< body[ibody].density << std::endl;}
     
 }
 
@@ -3630,6 +3661,7 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
 {
   int i,j;
   double *xcm,*xgc,*vcm,*quat,*omega,*ex_space,*ey_space,*ez_space,*conjqm;
+  double *rmass = atom->rmass;
 
   int m = 0;
 
@@ -3704,6 +3736,12 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
       buf[m++] = displace[j][2];
     }
 
+  } else if (commflag == ATOM_MASS) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      buf[m++] = rmass[j];
+    }
+
   } else if (commflag == BODYTAG) {
     for (i = 0; i < n; i++) {
       j = list[i];
@@ -3735,6 +3773,7 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
 {
   int i,j,last;
   double *xcm,*xgc,*vcm,*quat,*omega,*ex_space,*ey_space,*ez_space,*conjqm;
+  double *rmass = atom->rmass;
 
   int m = 0;
   last = first + n;
@@ -3805,6 +3844,11 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
       displace[i][0] = buf[m++];
       displace[i][1] = buf[m++];
       displace[i][2] = buf[m++];
+    }
+
+  } else if (commflag == ATOM_MASS) {
+    for (i = first; i < last; i++) {
+      rmass[i] = buf[m++];
     }
 
   } else if (commflag == BODYTAG) {
@@ -3881,7 +3925,6 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
       buf[m++] = xgc[2];
       buf[m++] = body[bodyown[i]].mass;
       buf[m++] = body[bodyown[i]].volume;
-      buf[m++] = body[bodyown[i]].density;
       buf[m++] = static_cast<double>(body[bodyown[i]].natoms);
     }
 
@@ -3971,7 +4014,6 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
       xgc[2] += buf[m++];
       body[bodyown[j]].mass += buf[m++];
       body[bodyown[j]].volume += buf[m++];
-      body[bodyown[j]].density += buf[m++];
       body[bodyown[j]].natoms += static_cast<int>(buf[m++]);
     }
 
