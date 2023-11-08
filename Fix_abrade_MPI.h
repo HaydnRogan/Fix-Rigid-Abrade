@@ -84,7 +84,7 @@ private:
   int triclinic;
   
   // Modified Commflags
-  enum{FULL_BODY, INITIAL, XCMIMAGE, FINAL, FORCE_TORQUE, VCM_ANGMOM, XCM_MASS, DISPLACE, NORMALS, BODYTAG, ITENSOR, DOF};
+  enum{FULL_BODY, INITIAL, IMAGE, FINAL, FORCE_TORQUE, DISPLACEMENT_VEL, VCM_ANGMOM, XCM_MASS, ATOM_MASS, DISPLACE, NORMALS, BODYTAG, ITENSOR, DOF};
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
@@ -96,11 +96,11 @@ private:
   tagint maxmol;       // max mol-ID
   double maxextent;    // furthest distance from body owner to body atom
 
-  double hardness, fric_coeff;       // hardness and friction coefficient
+  double hardness, fric_coeff, density;       // hardness and friction coefficient and particle density
   int varflag;
-  int hstyle, mustyle;
-  int hvar, muvar;
-  char *hstr, *mustr;
+  int hstyle, mustyle, densitystyle;
+  int hvar, muvar, densityvar;
+  char *hstr, *mustr, *densitystr;
 
 
   struct Body {
@@ -222,6 +222,7 @@ private:
   void set_v();
   void create_bodies(tagint *);
   void setup_bodies_static();
+  void resetup_bodies_static();
   void setup_bodies_dynamic();
   void apply_langevin_thermostat();
   void compute_forces_and_torques();
