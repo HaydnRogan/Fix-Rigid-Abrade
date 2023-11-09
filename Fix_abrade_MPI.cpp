@@ -2452,7 +2452,7 @@ void FixRigidAbrade::setup_bodies_static()
     xgc[0] = xgc[1] = xgc[2] = 0.0;
     body[ibody].mass = 0.0;
     body[ibody].volume = 0.0;
-    body[ibody].density = 0.0;
+    body[ibody].density = density;
     body[ibody].natoms = 0;
   }
 
@@ -2460,14 +2460,10 @@ void FixRigidAbrade::setup_bodies_static()
   double massone;
 
 // Cycling through the local atoms and summing their mass to the respective body
-  for (i = 0; i < nlocal; i++) {
+  for (i = 0; i < nlocal; i++){
     if (atom2body[i] < 0) continue;
+    
     Body *b = &body[atom2body[i]];
-    if (rmass) massone = rmass[i];
-    else massone = mass[type[i]];
-
-    // Still using the masses of the surface atoms to define the body mass - Eventually update to be calculated from the tetrahedra volumes and particle density
-    b->mass += massone;
     b->natoms++;
   }
 
@@ -2497,6 +2493,7 @@ void FixRigidAbrade::setup_bodies_static()
     }
   }
 
+  // Calculating body volume, mass and COM from constituent tetrahedra
   for (int n = 0; n < nanglelist; n++) {
       if (atom2body[anglelist[n][0]] < 0) continue;
       
@@ -2515,6 +2512,7 @@ void FixRigidAbrade::setup_bodies_static()
       xgc = b->xgc;
       
       b->volume += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *((unwrap1[0]+unwrap2[0]) + unwrap3[0]))/6.0;
+      b->mass += (((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *((unwrap1[0]+unwrap2[0]) + unwrap3[0]))/6.0) * density;
       xcm[0] += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *(((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0])))/24.0;
       xcm[1] += ((((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) *(((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1])))/24.0;
       xcm[2] += ((((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) *(((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2])))/24.0;
@@ -2531,18 +2529,17 @@ void FixRigidAbrade::setup_bodies_static()
   
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     // if ((std::ceil(body[ibody].volume * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].volume * 10.0) / 10.0)) {
-      std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << std::endl;
+      std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << " mass: " << body[ibody].mass << " natoms: " << body[ibody].natoms <<  std::endl;
     // }
 }
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
+    
     xcm = body[ibody].xcm;
     xgc = body[ibody].xgc;
 
-    // Setting each bodies' density and COM
-    // body[ibody].density = density;
-    // body[ibody].mass = body[ibody].volume * body[ibody].density;
-    body[ibody].density = body[ibody].mass/body[ibody].volume;
+    // Setting each bodies' COM
+
     xcm[0] /= body[ibody].volume;
     xcm[1] /= body[ibody].volume;
     xcm[2] /= body[ibody].volume;
@@ -2551,18 +2548,21 @@ void FixRigidAbrade::setup_bodies_static()
     xgc[2] /= body[ibody].volume;
   }
 
+  // Forward communicate mass and natoms to ghost bodies so the mass of their atoms can be set
+  commflag = MASS_NATOMS;
+  comm->forward_comm(this,2);
 
-// // Cycling through the local atoms and setting their mass to the respective (body mass/natoms)
-//   for (i = 0; i < nlocal; i++) {
-//     if (atom2body[i] < 0) continue;
-//     Body *b = &body[atom2body[i]];
-//     rmass[i] = b->mass / b->natoms;
-//   }
+  // Cycling through the local atoms and setting their mass to the respective (body mass/natoms) (therefore total mass of consituent atoms sums to the body mass)
+  for (i = 0; i < nlocal; i++) {
 
-//   // Forward communicating the atom masses to ghost atoms
-//   commflag = ATOM_MASS;
-//   comm->forward_comm(this,1);
+    if (atom2body[i] < 0) continue;
+    Body *b = &body[atom2body[i]];
+    rmass[i] = b->mass / b->natoms; 
+  }
 
+  // Forward communicating the atom masses to ghost atoms (May not be required)
+  commflag = ATOM_MASS;
+  comm->forward_comm(this,1);
 
   // set vcm, angmom = 0.0 in case inpfile is used
   // and doesn't overwrite all body's values
@@ -3736,6 +3736,14 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
       buf[m++] = displace[j][2];
     }
 
+  } else if (commflag == MASS_NATOMS) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      if (bodyown[j] < 0) continue;
+      buf[m++] = body[bodyown[j]].mass;
+      buf[m++] = body[bodyown[j]].natoms;
+    }
+
   } else if (commflag == ATOM_MASS) {
     for (i = 0; i < n; i++) {
       j = list[i];
@@ -3844,6 +3852,13 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
       displace[i][0] = buf[m++];
       displace[i][1] = buf[m++];
       displace[i][2] = buf[m++];
+    }
+
+  } else if (commflag == MASS_NATOMS) {
+    for (i = first; i < last; i++) {
+      if (bodyown[i] < 0) continue;
+      body[bodyown[i]].mass = buf[m++];
+      body[bodyown[i]].natoms = buf[m++];
     }
 
   } else if (commflag == ATOM_MASS) {
