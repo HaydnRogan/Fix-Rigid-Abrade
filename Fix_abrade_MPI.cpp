@@ -1566,6 +1566,12 @@ void FixRigidAbrade::final_integrate()
   commflag = DISPLACE;
   comm->forward_comm(this,3);
 
+// recalculate properties for each body
+// if (!(update->ntimestep % 50)){
+  // std::cout << me << "\n: resetting bodies at t = " << update->ntimestep << std::endl;
+  // resetup_bodies_static();
+// }
+
 }
 
 /* ---------------------------------------------------------------------- */
@@ -2965,6 +2971,461 @@ void FixRigidAbrade::setup_bodies_static()
   if (inpfile) memory->destroy(inbody);
 
   // std::cout << me << ": --------- Finished setup_bodies_static() for " << nlocal_body << " bodies -----------" << std::endl;
+
+}
+
+/* ----------------------------------------------------------------------
+   Recalculation of Bodies' COM, Volume, and Inertia
+------------------------------------------------------------------------- */
+
+void FixRigidAbrade::resetup_bodies_static()
+{
+  int i,ibody;
+  int nlocal = atom->nlocal;
+
+
+  AtomVecEllipsoid::Bonus *ebonus;
+  if (avec_ellipsoid) ebonus = avec_ellipsoid->bonus;
+  AtomVecLine::Bonus *lbonus;
+  if (avec_line) lbonus = avec_line->bonus;
+  AtomVecTri::Bonus *tbonus;
+  if (avec_tri) tbonus = avec_tri->bonus;
+  double **mu = atom->mu;
+  double *rmass = atom->rmass;
+  int *ellipsoid = atom->ellipsoid;
+  int *line = atom->line;
+  int *tri = atom->tri;
+
+  // acquire ghost bodies via forward comm
+  // set atom2body for ghost atoms via forward comm
+  // set atom2body for other owned atoms via reset_atom2body()
+
+  nghost_body = 0;
+  commflag = FULL_BODY;
+  comm->forward_comm(this);
+
+  // Only bodytag[i] is communicated communicated in pack/unpack_exchange() so we reassign atom2body foe local and ghost atoms
+  reset_atom2body();
+
+  // compute mass & center-of-mass of each rigid body
+
+  double **x = atom->x;
+
+  double *xcm;
+  double *xgc;
+
+  for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++) {
+    xcm = body[ibody].xcm;
+    xgc = body[ibody].xgc;
+    xcm[0] = xcm[1] = xcm[2] = 0.0;
+    xgc[0] = xgc[1] = xgc[2] = 0.0;
+    body[ibody].mass = 0.0;
+    body[ibody].volume = 0.0;
+    body[ibody].density = density;
+    body[ibody].natoms = 0;
+  }
+
+  double unwrap[3];
+  double massone;
+
+// Cycling through the local atoms and summing their mass to the respective body
+  for (i = 0; i < nlocal; i++){
+    if (atom2body[i] < 0) continue;
+    
+    Body *b = &body[atom2body[i]];
+    b->natoms++;
+  }
+
+  int nanglelist = neighbor->nanglelist;
+  int **anglelist = neighbor->anglelist;
+  double unwrap1[3], unwrap2[3], unwrap3[3];
+  
+  int i1, i2, i3;
+  
+// xcm should already exist for locally stored atoms since they are communicated in pack/unpack_exchange()
+
+// Cycle through all angles and assign xcmimage to their ghost atoms
+  for (int n=0; n<nanglelist; n++){  
+    
+  // Cycle through atoms in angle
+    for (int i = 0; i < 3; i++){
+        // Check if i is a ghost atom
+        if (anglelist[n][i] >= nlocal){
+        
+        // Check if it exists for the other atoms in the angle and set its value equal to that 
+        for (int j = 1; j < 3; j++){
+          if (anglelist[n][(i+j)%3] < nlocal) {
+            xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
+            }
+          }
+        }
+      // Check if all angle atoms have a xcm
+      if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
+    }
+  }
+
+  // Calculating body volume, mass and COM from constituent tetrahedra
+  for (int n = 0; n < nanglelist; n++) {
+      if (atom2body[anglelist[n][0]] < 0) continue;
+      
+      Body *b = &body[atom2body[anglelist[n][0]]];
+    
+      // Storing the three atoms in each angle
+      i1 = anglelist[n][0];
+      i2 = anglelist[n][1];
+      i3 = anglelist[n][2];
+
+      domain->unmap(x[i1],xcmimage[i1],unwrap1);
+      domain->unmap(x[i2],xcmimage[i2],unwrap2);
+      domain->unmap(x[i3],xcmimage[i3],unwrap3);
+      
+      xcm = b->xcm;
+      xgc = b->xgc;
+      
+      b->volume += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *((unwrap1[0]+unwrap2[0]) + unwrap3[0]))/6.0;
+      b->mass += (((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *((unwrap1[0]+unwrap2[0]) + unwrap3[0]))/6.0) * density;
+      xcm[0] += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *(((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0])))/24.0;
+      xcm[1] += ((((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) *(((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1])))/24.0;
+      xcm[2] += ((((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) *(((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2])))/24.0;
+      xgc[0] += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *(((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0])))/24.0;
+      xgc[1] += ((((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) *(((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1])))/24.0;
+      xgc[2] += ((((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) *(((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2])))/24.0;
+    }
+
+  // reverse communicate xcm, mass of all bodies
+  commflag = XCM_MASS;
+  comm->reverse_comm(this,9);
+
+  std::cout << " ---------------------- " << nlocal_body << " bodies owned by proc " << me << " ---------------------- "  << std::endl;
+  
+  for (ibody = 0; ibody < nlocal_body; ibody++) {
+    // if ((std::ceil(body[ibody].volume * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].volume * 10.0) / 10.0)) {
+      std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << " mass: " << body[ibody].mass << " natoms: " << body[ibody].natoms <<  std::endl;
+    // }
+}
+
+  for (ibody = 0; ibody < nlocal_body; ibody++) {
+    
+    xcm = body[ibody].xcm;
+    xgc = body[ibody].xgc;
+
+    // Setting each bodies' COM
+
+    xcm[0] /= body[ibody].volume;
+    xcm[1] /= body[ibody].volume;
+    xcm[2] /= body[ibody].volume;
+    xgc[0] /= body[ibody].volume;
+    xgc[1] /= body[ibody].volume;
+    xgc[2] /= body[ibody].volume;
+  }
+
+  // Forward communicate mass and natoms to ghost bodies so the mass of their atoms can be set
+  commflag = MASS_NATOMS;
+  comm->forward_comm(this,2);
+
+  // Cycling through the local atoms and setting their mass to the respective (body mass/natoms) (therefore total mass of consituent atoms sums to the body mass)
+  for (i = 0; i < nlocal; i++) {
+
+    if (atom2body[i] < 0) continue;
+    Body *b = &body[atom2body[i]];
+    rmass[i] = b->mass / b->natoms; // (Note - this does not affect the rigidbody dynamics but it may be pertient for mass/energy balances to properly account for material removed from the system during abrasion)
+  }
+
+  // Forward communicating the atom masses to ghost atoms 
+  commflag = ATOM_MASS;
+  comm->forward_comm(this,1);
+
+  // remap the xcm of each body back into simulation box
+  //   and reset body and atom xcmimage flags via pre_neighbor()
+
+  pre_neighbor();
+
+  // compute 6 moments of inertia of each body in Cartesian reference frame
+  // dx,dy,dz = coords relative to center-of-mass
+  // symmetric 3x3 inertia tensor stored in Voigt notation as 6-vector
+
+  memory->create(itensor,nlocal_body+nghost_body,6,"rigid/abrade:itensor");
+  for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++)
+    for (i = 0; i < 6; i++) itensor[ibody][i] = 0.0;
+
+  double dx,dy,dz;
+  double *inertia;
+
+
+// Cycle through all angles and assign xcmimage to their ghost atoms
+  for (int n=0; n<nanglelist; n++){  
+    
+  // Cycle through atoms in angle
+    for (int i = 0; i < 3; i++){
+        // Check if i is a ghost atom
+        if (anglelist[n][i] >= nlocal){
+        
+        // Check if it exists for the other atoms in the angle and set its value equal to that 
+        for (int j = 1; j < 3; j++){
+          if (anglelist[n][(i+j)%3] < nlocal) {
+            xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
+            }
+          }
+        }
+      // Check if all angle atoms have a xcm
+      if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
+    }
+  }
+
+    for (int n = 0; n < nanglelist; n++) {
+      if (atom2body[anglelist[n][0]] < 0) continue;
+      Body *b = &body[atom2body[anglelist[n][0]]];
+    
+      // Storing the three atoms in each angle
+      i1 = anglelist[n][0];
+      i2 = anglelist[n][1];
+      i3 = anglelist[n][2];
+
+      domain->unmap(x[i1],xcmimage[i1],unwrap1);
+      domain->unmap(x[i2],xcmimage[i2],unwrap2);
+      domain->unmap(x[i3],xcmimage[i3],unwrap3);
+
+      inertia = itensor[atom2body[anglelist[n][0]]];
+      inertia[0] += (((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *(unwrap1[0]*(unwrap1[0]*unwrap1[0])+unwrap2[0]*((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*(((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0])));
+      inertia[1] += (((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) *(unwrap1[1]*(unwrap1[1]*unwrap1[1])+unwrap2[1]*((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*(((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1])));
+      inertia[2] += (((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) *(unwrap1[2]*(unwrap1[2]*unwrap1[2])+unwrap2[2]*((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*(((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2])));
+      inertia[3] += (((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) * (unwrap1[1]*((((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0]))+unwrap1[0]*(((unwrap1[0]+unwrap2[0]) + unwrap3[0])+unwrap1[0]))+unwrap2[1]*((((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0]))+unwrap2[0]*(((unwrap1[0]+unwrap2[0]) + unwrap3[0])+unwrap2[0]))+unwrap3[1]*((((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0]))+unwrap3[0]*(((unwrap1[0]+unwrap2[0]) + unwrap3[0])+unwrap3[0])));
+      inertia[4] += (((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) * (unwrap1[2]*((((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1]))+unwrap1[1]*(((unwrap1[1]+unwrap2[1]) + unwrap3[1])+unwrap1[1]))+unwrap2[2]*((((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1]))+unwrap2[1]*(((unwrap1[1]+unwrap2[1]) + unwrap3[1])+unwrap2[1]))+unwrap3[2]*((((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1]))+unwrap3[1]*(((unwrap1[1]+unwrap2[1]) + unwrap3[1])+unwrap3[1])));
+      inertia[5] += (((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) * (unwrap1[0]*((((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2]))+unwrap1[2]*(((unwrap1[2]+unwrap2[2]) + unwrap3[2])+unwrap1[2]))+unwrap2[0]*((((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2]))+unwrap2[2]*(((unwrap1[2]+unwrap2[2]) + unwrap3[2])+unwrap2[2]))+unwrap3[0]*((((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2]))+unwrap3[2]*(((unwrap1[2]+unwrap2[2]) + unwrap3[2])+unwrap3[2])));
+    }
+
+  // reverse communicate inertia tensor of all bodies
+
+  commflag = ITENSOR;
+  comm->reverse_comm(this,6);
+
+  // diagonalize inertia tensor for each body via Jacobi rotations
+  // inertia = 3 eigenvalues = principal moments of inertia
+  // evectors and exzy_space = 3 evectors = principal axes of rigid body
+
+  int ierror;
+  double cross[3];
+  double tensor[3][3],evectors[3][3];
+  double *ex,*ey,*ez;
+
+  for (ibody = 0; ibody < nlocal_body; ibody++) {
+
+    tensor[0][0] = body[ibody].density * (((itensor[ibody][1] + itensor[ibody][2])/60.0) - body[ibody].volume*(body[ibody].xcm[1]*body[ibody].xcm[1] + body[ibody].xcm[2]*body[ibody].xcm[2]));
+    tensor[1][1] = body[ibody].density * (((itensor[ibody][0] + itensor[ibody][2])/60.0) - body[ibody].volume*(body[ibody].xcm[2]*body[ibody].xcm[2] + body[ibody].xcm[0]*body[ibody].xcm[0]));
+    tensor[2][2] = body[ibody].density * (((itensor[ibody][0] + itensor[ibody][1])/60.0) - body[ibody].volume*(body[ibody].xcm[0]*body[ibody].xcm[0] + body[ibody].xcm[1]*body[ibody].xcm[1]));
+    
+    tensor[0][1] = tensor[1][0] = -body[ibody].density * ((itensor[ibody][3]/120.0 - body[ibody].volume*body[ibody].xcm[0]*body[ibody].xcm[1]));
+    tensor[1][2] = tensor[2][1] = -body[ibody].density * ((itensor[ibody][4]/120.0 - body[ibody].volume*body[ibody].xcm[1]*body[ibody].xcm[2]));  
+    tensor[0][2] = tensor[2][0] = -body[ibody].density * ((itensor[ibody][5]/120.0 - body[ibody].volume*body[ibody].xcm[2]*body[ibody].xcm[0]));
+
+    std::cout << me << ": pre diag Body " << ibody << " inertia: (" << tensor[0][0] << ", "  <<     tensor[1][1] << ", "  <<  tensor[2][2]  << ") Volume: " <<  body[ibody].volume << " Mass: " <<  body[ibody].mass <<" Density: "<< body[ibody].density << std::endl;
+
+
+
+    inertia = body[ibody].inertia;
+    ierror = MathEigen::jacobi3(tensor,inertia,evectors);
+    if (ierror) error->all(FLERR,
+                           "Insufficient Jacobi rotations for rigid body");
+
+    ex = body[ibody].ex_space;
+    ex[0] = evectors[0][0];
+    ex[1] = evectors[1][0];
+    ex[2] = evectors[2][0];
+    ey = body[ibody].ey_space;
+    ey[0] = evectors[0][1];
+    ey[1] = evectors[1][1];
+    ey[2] = evectors[2][1];
+    ez = body[ibody].ez_space;
+    ez[0] = evectors[0][2];
+    ez[1] = evectors[1][2];
+    ez[2] = evectors[2][2];
+
+    // if any principal moment < scaled EPSILON, set to 0.0
+
+    double max;
+    max = MAX(inertia[0],inertia[1]);
+    max = MAX(max,inertia[2]);
+
+    if (inertia[0] < EPSILON*max) inertia[0] = 0.0;
+    if (inertia[1] < EPSILON*max) inertia[1] = 0.0;
+    if (inertia[2] < EPSILON*max) inertia[2] = 0.0;
+
+    // enforce 3 evectors as a right-handed coordinate system
+    // flip 3rd vector if needed
+
+    MathExtra::cross3(ex,ey,cross);
+    if (MathExtra::dot3(cross,ez) < 0.0) MathExtra::negate3(ez);
+
+    // create initial quaternion
+
+    MathExtra::exyz_to_q(ex,ey,ez,body[ibody].quat);
+
+    // convert geometric center position to principal axis coordinates
+    // xcm is wrapped, but xgc is not initially
+    xcm = body[ibody].xcm;
+    xgc = body[ibody].xgc;
+    double delta[3];
+    MathExtra::sub3(xgc,xcm,delta);
+    domain->minimum_image(delta);
+    MathExtra::transpose_matvec(ex,ey,ez,delta,body[ibody].xgc_body);
+    MathExtra::add3(xcm,delta,xgc);
+  }
+
+  // forward communicate updated info of all bodies
+
+  commflag = INITIAL;
+  comm->forward_comm(this,29);
+
+  std::cout << me << ": nlocalbodies = " << nlocal_body << std::endl;
+  if (nlocal_body > 0){
+    for (ibody = 0; ibody < nlocal_body; ibody++) {
+      std::cout << me << ": 1st run Body " << ibody << " inertia: (" << body[ibody].inertia[0] << ", "  << body[ibody].inertia[1] << ", "  << body[ibody].inertia[2] << ") Volume: " <<  body[ibody].volume << " Mass: " <<  body[ibody].mass <<" Density: "<< body[ibody].density << std::endl;
+    }
+  }
+  // displace = initial atom coords in basis of principal axes
+  // set displace = 0.0 for atoms not in any rigid body
+  // for extended particles, set their orientation wrt to rigid body
+
+  // displace must be recalculated since the bodies' coordinate system may have changed with the updating of COM and the prinicpal axes
+
+  double qc[4],delta[3];
+  double *quatatom;
+  double theta_body;
+
+  for (i = 0; i < nlocal; i++) {
+    if (atom2body[i] < 0) {
+      displace[i][0] = displace[i][1] = displace[i][2] = 0.0;
+      continue;
+    }
+
+    Body *b = &body[atom2body[i]];
+
+    domain->unmap(x[i],xcmimage[i],unwrap);
+    xcm = b->xcm;
+    delta[0] = unwrap[0] - xcm[0];
+    delta[1] = unwrap[1] - xcm[1];
+    delta[2] = unwrap[2] - xcm[2];
+
+    MathExtra::transpose_matvec(b->ex_space,b->ey_space,b->ez_space,
+                                delta,displace[i]);
+
+
+    if (extended) {
+      if (eflags[i] & ELLIPSOID) {
+        quatatom = ebonus[ellipsoid[i]].quat;
+        MathExtra::qconjugate(b->quat,qc);
+        MathExtra::quatquat(qc,quatatom,orient[i]);
+        MathExtra::qnormalize(orient[i]);
+      } else if (eflags[i] & LINE) {
+        if (b->quat[3] >= 0.0) theta_body = 2.0*acos(b->quat[0]);
+        else theta_body = -2.0*acos(b->quat[0]);
+        orient[i][0] = lbonus[line[i]].theta - theta_body;
+        while (orient[i][0] <= -MY_PI) orient[i][0] += MY_2PI;
+        while (orient[i][0] > MY_PI) orient[i][0] -= MY_2PI;
+        if (orientflag == 4) orient[i][1] = orient[i][2] = orient[i][3] = 0.0;
+      } else if (eflags[i] & TRIANGLE) {
+        quatatom = tbonus[tri[i]].quat;
+        MathExtra::qconjugate(b->quat,qc);
+        MathExtra::quatquat(qc,quatatom,orient[i]);
+        MathExtra::qnormalize(orient[i]);
+      } else if (orientflag == 4) {
+        orient[i][0] = orient[i][1] = orient[i][2] = orient[i][3] = 0.0;
+      } else if (orientflag == 1)
+        orient[i][0] = 0.0;
+
+      if (eflags[i] & DIPOLE) {
+        MathExtra::transpose_matvec(b->ex_space,b->ey_space,b->ez_space,
+                                    mu[i],dorient[i]);
+        MathExtra::snormalize3(mu[i][3],dorient[i],dorient[i]);
+      } else if (dorientflag)
+        dorient[i][0] = dorient[i][1] = dorient[i][2] = 0.0;
+    }
+  }
+
+  // forward communicate displace[i] to ghost atoms to test for valid principal moments & axes
+  commflag = DISPLACE;
+  comm->forward_comm(this,3);
+
+  // test for valid principal moments & axes
+  // recompute moments of inertia around new axes
+  // 3 diagonal moments should equal principal moments
+  // 3 off-diagonal moments should be 0.0
+  // extended particles may contribute extra terms to moments of inertia
+
+  for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++)
+    for (i = 0; i < 6; i++) itensor[ibody][i] = 0.0;
+
+  for (int n = 0; n < nanglelist; n++) {
+    if (atom2body[anglelist[n][0]] < 0) continue;
+    
+    i1 = anglelist[n][0];
+    i2 = anglelist[n][1];
+    i3 = anglelist[n][2];
+    
+    inertia = itensor[atom2body[anglelist[n][0]]];
+
+    inertia[0] += body[atom2body[anglelist[n][0]]].density * ((((((displace[i3][0]-displace[i1][0])*(displace[i2][2]-displace[i1][2])) - ((displace[i2][0]-displace[i1][0])*(displace[i3][2]-displace[i1][2]))) *(displace[i1][1]*(displace[i1][1]*displace[i1][1])+displace[i2][1]*((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*(((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*((displace[i1][1]+displace[i2][1]) + displace[i3][1]))) + (((displace[i2][0]-displace[i1][0])*(displace[i3][1]-displace[i1][1])) - ((displace[i3][0]-displace[i1][0])*(displace[i2][1]-displace[i1][1]))) *(displace[i1][2]*(displace[i1][2]*displace[i1][2])+displace[i2][2]*((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*(((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))))/60.0));
+    inertia[1] += body[atom2body[anglelist[n][0]]].density * ((((((displace[i2][1]-displace[i1][1])*(displace[i3][2]-displace[i1][2])) - ((displace[i3][1]-displace[i1][1])*(displace[i2][2]-displace[i1][2]))) *(displace[i1][0]*(displace[i1][0]*displace[i1][0])+displace[i2][0]*((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*(((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*((displace[i1][0]+displace[i2][0]) + displace[i3][0]))) + (((displace[i2][0]-displace[i1][0])*(displace[i3][1]-displace[i1][1])) - ((displace[i3][0]-displace[i1][0])*(displace[i2][1]-displace[i1][1]))) *(displace[i1][2]*(displace[i1][2]*displace[i1][2])+displace[i2][2]*((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*(((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))))/60.0));
+    inertia[2] += body[atom2body[anglelist[n][0]]].density * ((((((displace[i2][1]-displace[i1][1])*(displace[i3][2]-displace[i1][2])) - ((displace[i3][1]-displace[i1][1])*(displace[i2][2]-displace[i1][2]))) *(displace[i1][0]*(displace[i1][0]*displace[i1][0])+displace[i2][0]*((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*(((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*((displace[i1][0]+displace[i2][0]) + displace[i3][0]))) + (((displace[i3][0]-displace[i1][0])*(displace[i2][2]-displace[i1][2])) - ((displace[i2][0]-displace[i1][0])*(displace[i3][2]-displace[i1][2]))) *(displace[i1][1]*(displace[i1][1]*displace[i1][1])+displace[i2][1]*((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*(((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*((displace[i1][1]+displace[i2][1]) + displace[i3][1]))))/60.0));
+    inertia[3] -= body[atom2body[anglelist[n][0]]].density * ((((((displace[i2][1]-displace[i1][1])*(displace[i3][2]-displace[i1][2])) - ((displace[i3][1]-displace[i1][1])*(displace[i2][2]-displace[i1][2]))) * (displace[i1][1]*((((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*((displace[i1][0]+displace[i2][0]) + displace[i3][0]))+displace[i1][0]*(((displace[i1][0]+displace[i2][0]) + displace[i3][0])+displace[i1][0]))+displace[i2][1]*((((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*((displace[i1][0]+displace[i2][0]) + displace[i3][0]))+displace[i2][0]*(((displace[i1][0]+displace[i2][0]) + displace[i3][0])+displace[i2][0]))+displace[i3][1]*((((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*((displace[i1][0]+displace[i2][0]) + displace[i3][0]))+displace[i3][0]*(((displace[i1][0]+displace[i2][0]) + displace[i3][0])+displace[i3][0]))))/120.0));
+    inertia[4] -= body[atom2body[anglelist[n][0]]].density * ((((((displace[i3][0]-displace[i1][0])*(displace[i2][2]-displace[i1][2])) - ((displace[i2][0]-displace[i1][0])*(displace[i3][2]-displace[i1][2]))) * (displace[i1][2]*((((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*((displace[i1][1]+displace[i2][1]) + displace[i3][1]))+displace[i1][1]*(((displace[i1][1]+displace[i2][1]) + displace[i3][1])+displace[i1][1]))+displace[i2][2]*((((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*((displace[i1][1]+displace[i2][1]) + displace[i3][1]))+displace[i2][1]*(((displace[i1][1]+displace[i2][1]) + displace[i3][1])+displace[i2][1]))+displace[i3][2]*((((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*((displace[i1][1]+displace[i2][1]) + displace[i3][1]))+displace[i3][1]*(((displace[i1][1]+displace[i2][1]) + displace[i3][1])+displace[i3][1]))))/120.0));  
+    inertia[5] -= body[atom2body[anglelist[n][0]]].density * ((((((displace[i2][0]-displace[i1][0])*(displace[i3][1]-displace[i1][1])) - ((displace[i3][0]-displace[i1][0])*(displace[i2][1]-displace[i1][1]))) * (displace[i1][0]*((((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))+displace[i1][2]*(((displace[i1][2]+displace[i2][2]) + displace[i3][2])+displace[i1][2]))+displace[i2][0]*((((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))+displace[i2][2]*(((displace[i1][2]+displace[i2][2]) + displace[i3][2])+displace[i2][2]))+displace[i3][0]*((((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))+displace[i3][2]*(((displace[i1][2]+displace[i2][2]) + displace[i3][2])+displace[i3][2]))))/120.0));
+  }
+
+  // reverse communicate inertia tensor of all bodies
+
+
+  commflag = ITENSOR;
+  comm->reverse_comm(this,6);
+
+  if (nlocal_body > 0)std::cout << me << ": Body " << 0 << " inertia: (" << body[0].inertia[0] << ", "  << body[0].inertia[1] << ", "  << body[0].inertia[2] << ") Volume: " <<  body[0].volume << " Mass: " <<  body[0].mass <<" Density: "<< body[0].density << std::endl;
+  for (ibody = 0; ibody < nlocal_body; ibody++) {
+    // std::cout << me << ": testing body " << ibody << std::endl;
+    if (
+      (std::ceil(body[ibody].inertia[0] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[0] * 10.0) / 10.0) ||
+      (std::ceil(body[ibody].inertia[1] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[1] * 10.0) / 10.0) ||
+      (std::ceil(body[ibody].inertia[2] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[2] * 10.0) / 10.0) 
+      ) {std::cout << me << ": Dissagreement with Body " << ibody << " inertia: (" << body[ibody].inertia[0] << ", "  << body[ibody].inertia[1] << ", "  << body[ibody].inertia[2] << ") Volume: " <<  body[ibody].volume << " Mass: " <<  body[ibody].mass << " Density: "<< body[ibody].density << std::endl;}
+    
+}
+
+  // error check that re-computed moments of inertia match diagonalized ones
+  // do not do test for bodies with params read from inpfile
+
+  double norm;
+  for (ibody = 0; ibody < nlocal_body; ibody++) {
+    inertia = body[ibody].inertia;
+
+    if (inertia[0] == 0.0) {
+      if (fabs(itensor[ibody][0]) > TOLERANCE)
+        error->all(FLERR,"Fix rigid: Bad principal moments");
+    } else {
+      if (fabs((itensor[ibody][0]-inertia[0])/inertia[0]) >
+          TOLERANCE) error->all(FLERR,"Fix rigid: Bad principal moments");
+    }
+    if (inertia[1] == 0.0) {
+      if (fabs(itensor[ibody][1]) > TOLERANCE)
+        error->all(FLERR,"Fix rigid: Bad principal moments");
+    } else {
+      if (fabs((itensor[ibody][1]-inertia[1])/inertia[1]) >
+          TOLERANCE) error->all(FLERR,"Fix rigid: Bad principal moments");
+    }
+    if (inertia[2] == 0.0) {
+      if (fabs(itensor[ibody][2]) > TOLERANCE)
+        error->all(FLERR,"Fix rigid: Bad principal moments");
+    } else {
+      if (fabs((itensor[ibody][2]-inertia[2])/inertia[2]) >
+          TOLERANCE) error->all(FLERR,"Fix rigid: Bad principal moments");
+    }
+    norm = (inertia[0] + inertia[1] + inertia[2]) / 3.0;
+    if (fabs(itensor[ibody][3]/norm) > TOLERANCE ||
+        fabs(itensor[ibody][4]/norm) > TOLERANCE ||
+        fabs(itensor[ibody][5]/norm) > TOLERANCE)
+      error->all(FLERR,"Fix rigid: Bad principal moments");
+  }
+
+  // clean up
+  memory->destroy(itensor);
 
 }
 
