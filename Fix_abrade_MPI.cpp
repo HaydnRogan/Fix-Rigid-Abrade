@@ -1569,7 +1569,7 @@ void FixRigidAbrade::final_integrate()
 // recalculate properties for each body
 // if (!(update->ntimestep % 50)){
   // std::cout << me << "\n: resetting bodies at t = " << update->ntimestep << std::endl;
-  // resetup_bodies_static();
+  resetup_bodies_static();
 // }
 
 }
@@ -2462,7 +2462,6 @@ void FixRigidAbrade::setup_bodies_static()
     body[ibody].natoms = 0;
   }
 
-  double unwrap[3];
   double massone;
 
 // Cycling through the local atoms and summing their mass to the respective body
@@ -2479,25 +2478,16 @@ void FixRigidAbrade::setup_bodies_static()
   
   int i1, i2, i3;
   
-// Cycle through all angles and assign xcmimage to their ghost atoms
-  for (int n=0; n<nanglelist; n++){  
-    
-  // Cycle through atoms in angle
-    for (int i = 0; i < 3; i++){
-        // Check if i is a ghost atom
-        if (anglelist[n][i] >= nlocal){
-        
-        // Check if it exists for the other atoms in the angle and set its value equal to that 
-        for (int j = 1; j < 3; j++){
-          if (anglelist[n][(i+j)%3] < nlocal) {
-            xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
-            }
-          }
-        }
-      // Check if all angle atoms have a xcm
-      if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
-    }
-  }
+// communicate unwrapped position of owned atoms to ghost atoms
+
+  double **unwrap;
+  
+  memory->create(unwrap,atom->nmax,3,"domain:unwrap");
+
+  for (i = 0; i < nlocal; i++) domain->unmap(x[i],xcmimage[i],unwrap[i]);
+  
+  comm->forward_comm_array(3,unwrap);
+
 
   // Calculating body volume, mass and COM from constituent tetrahedra
   for (int n = 0; n < nanglelist; n++) {
@@ -2510,22 +2500,19 @@ void FixRigidAbrade::setup_bodies_static()
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
 
-      domain->unmap(x[i1],xcmimage[i1],unwrap1);
-      domain->unmap(x[i2],xcmimage[i2],unwrap2);
-      domain->unmap(x[i3],xcmimage[i3],unwrap3);
       
       xcm = b->xcm;
       xgc = b->xgc;
       
-      b->volume += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *((unwrap1[0]+unwrap2[0]) + unwrap3[0]))/6.0;
-      b->mass += (((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *((unwrap1[0]+unwrap2[0]) + unwrap3[0]))/6.0) * density;
-      xcm[0] += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *(((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0])))/24.0;
-      xcm[1] += ((((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) *(((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1])))/24.0;
-      xcm[2] += ((((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) *(((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2])))/24.0;
-      xgc[0] += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *(((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0])))/24.0;
-      xgc[1] += ((((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) *(((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1])))/24.0;
-      xgc[2] += ((((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) *(((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2])))/24.0;
-    }
+      b->volume += ((((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) *((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0]))/6.0;
+      b->mass += (((((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) *((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0]))/6.0) * density;
+      xcm[0] += ((((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) *(((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])))/24.0;
+      xcm[1] += ((((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][2]-unwrap[i1][2])) - ((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][2]-unwrap[i1][2]))) *(((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])))/24.0;
+      xcm[2] += ((((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][1]-unwrap[i1][1])) - ((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][1]-unwrap[i1][1]))) *(((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])))/24.0;
+      xgc[0] += ((((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) *(((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])))/24.0;
+      xgc[1] += ((((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][2]-unwrap[i1][2])) - ((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][2]-unwrap[i1][2]))) *(((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])))/24.0;
+      xgc[2] += ((((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][1]-unwrap[i1][1])) - ((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][1]-unwrap[i1][1]))) *(((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])))/24.0;
+     }
 
   // reverse communicate xcm, mass of all bodies
   commflag = XCM_MASS;
@@ -2629,17 +2616,13 @@ void FixRigidAbrade::setup_bodies_static()
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
 
-      domain->unmap(x[i1],xcmimage[i1],unwrap1);
-      domain->unmap(x[i2],xcmimage[i2],unwrap2);
-      domain->unmap(x[i3],xcmimage[i3],unwrap3);
-
       inertia = itensor[atom2body[anglelist[n][0]]];
-      inertia[0] += (((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *(unwrap1[0]*(unwrap1[0]*unwrap1[0])+unwrap2[0]*((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*(((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0])));
-      inertia[1] += (((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) *(unwrap1[1]*(unwrap1[1]*unwrap1[1])+unwrap2[1]*((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*(((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1])));
-      inertia[2] += (((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) *(unwrap1[2]*(unwrap1[2]*unwrap1[2])+unwrap2[2]*((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*(((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2])));
-      inertia[3] += (((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) * (unwrap1[1]*((((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0]))+unwrap1[0]*(((unwrap1[0]+unwrap2[0]) + unwrap3[0])+unwrap1[0]))+unwrap2[1]*((((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0]))+unwrap2[0]*(((unwrap1[0]+unwrap2[0]) + unwrap3[0])+unwrap2[0]))+unwrap3[1]*((((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0]))+unwrap3[0]*(((unwrap1[0]+unwrap2[0]) + unwrap3[0])+unwrap3[0])));
-      inertia[4] += (((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) * (unwrap1[2]*((((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1]))+unwrap1[1]*(((unwrap1[1]+unwrap2[1]) + unwrap3[1])+unwrap1[1]))+unwrap2[2]*((((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1]))+unwrap2[1]*(((unwrap1[1]+unwrap2[1]) + unwrap3[1])+unwrap2[1]))+unwrap3[2]*((((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1]))+unwrap3[1]*(((unwrap1[1]+unwrap2[1]) + unwrap3[1])+unwrap3[1])));
-      inertia[5] += (((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) * (unwrap1[0]*((((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2]))+unwrap1[2]*(((unwrap1[2]+unwrap2[2]) + unwrap3[2])+unwrap1[2]))+unwrap2[0]*((((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2]))+unwrap2[2]*(((unwrap1[2]+unwrap2[2]) + unwrap3[2])+unwrap2[2]))+unwrap3[0]*((((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2]))+unwrap3[2]*(((unwrap1[2]+unwrap2[2]) + unwrap3[2])+unwrap3[2])));
+      inertia[0] += (((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) *(unwrap[i1][0]*(unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*(((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])));
+      inertia[1] += (((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][2]-unwrap[i1][2])) - ((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][2]-unwrap[i1][2]))) *(unwrap[i1][1]*(unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*(((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])));
+      inertia[2] += (((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][1]-unwrap[i1][1])) - ((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][1]-unwrap[i1][1]))) *(unwrap[i1][2]*(unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*(((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])));
+      inertia[3] += (((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) * (unwrap[i1][1]*((((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0]))+unwrap[i1][0]*(((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])+unwrap[i1][0]))+unwrap[i2][1]*((((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0]))+unwrap[i2][0]*(((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])+unwrap[i2][0]))+unwrap[i3][1]*((((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0]))+unwrap[i3][0]*(((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])+unwrap[i3][0])));
+      inertia[4] += (((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][2]-unwrap[i1][2])) - ((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][2]-unwrap[i1][2]))) * (unwrap[i1][2]*((((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1]))+unwrap[i1][1]*(((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])+unwrap[i1][1]))+unwrap[i2][2]*((((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1]))+unwrap[i2][1]*(((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])+unwrap[i2][1]))+unwrap[i3][2]*((((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1]))+unwrap[i3][1]*(((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])+unwrap[i3][1])));
+      inertia[5] += (((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][1]-unwrap[i1][1])) - ((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][1]-unwrap[i1][1]))) * (unwrap[i1][0]*((((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2]))+unwrap[i1][2]*(((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])+unwrap[i1][2]))+unwrap[i2][0]*((((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2]))+unwrap[i2][2]*(((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])+unwrap[i2][2]))+unwrap[i3][0]*((((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2]))+unwrap[i3][2]*(((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])+unwrap[i3][2])));
     }
 
   // extended particles may contribute extra terms to moments of inertia
@@ -2793,11 +2776,10 @@ void FixRigidAbrade::setup_bodies_static()
 
     Body *b = &body[atom2body[i]];
 
-    domain->unmap(x[i],xcmimage[i],unwrap);
     xcm = b->xcm;
-    delta[0] = unwrap[0] - xcm[0];
-    delta[1] = unwrap[1] - xcm[1];
-    delta[2] = unwrap[2] - xcm[2];
+    delta[0] = unwrap[i][0] - xcm[0];
+    delta[1] = unwrap[i][1] - xcm[1];
+    delta[2] = unwrap[i][2] - xcm[2];
 
     MathExtra::transpose_matvec(b->ex_space,b->ey_space,b->ez_space,
                                 delta,displace[i]);
@@ -2968,6 +2950,7 @@ void FixRigidAbrade::setup_bodies_static()
   // clean up
 
   memory->destroy(itensor);
+  memory->destroy(unwrap);
   if (inpfile) memory->destroy(inbody);
 
   // std::cout << me << ": --------- Finished setup_bodies_static() for " << nlocal_body << " bodies -----------" << std::endl;
@@ -3025,7 +3008,6 @@ void FixRigidAbrade::resetup_bodies_static()
     body[ibody].natoms = 0;
   }
 
-  double unwrap[3];
   double massone;
 
 // Cycling through the local atoms and summing their mass to the respective body
@@ -3040,29 +3022,18 @@ void FixRigidAbrade::resetup_bodies_static()
   int **anglelist = neighbor->anglelist;
   double unwrap1[3], unwrap2[3], unwrap3[3];
   
-  int i1, i2, i3;
-  
-// xcm should already exist for locally stored atoms since they are communicated in pack/unpack_exchange()
+    int i1, i2, i3;
 
-// Cycle through all angles and assign xcmimage to their ghost atoms
-  for (int n=0; n<nanglelist; n++){  
-    
-  // Cycle through atoms in angle
-    for (int i = 0; i < 3; i++){
-        // Check if i is a ghost atom
-        if (anglelist[n][i] >= nlocal){
-        
-        // Check if it exists for the other atoms in the angle and set its value equal to that 
-        for (int j = 1; j < 3; j++){
-          if (anglelist[n][(i+j)%3] < nlocal) {
-            xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
-            }
-          }
-        }
-      // Check if all angle atoms have a xcm
-      if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
-    }
-  }
+// communicate unwrapped position of owned atoms to ghost atoms
+
+  double **unwrap;
+  
+  memory->create(unwrap,atom->nmax,3,"domain:unwrap");
+
+  for (i = 0; i < nlocal; i++) domain->unmap(x[i],xcmimage[i],unwrap[i]);
+  
+  comm->forward_comm_array(3,unwrap);
+
 
   // Calculating body volume, mass and COM from constituent tetrahedra
   for (int n = 0; n < nanglelist; n++) {
@@ -3075,34 +3046,31 @@ void FixRigidAbrade::resetup_bodies_static()
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
 
-      domain->unmap(x[i1],xcmimage[i1],unwrap1);
-      domain->unmap(x[i2],xcmimage[i2],unwrap2);
-      domain->unmap(x[i3],xcmimage[i3],unwrap3);
       
       xcm = b->xcm;
       xgc = b->xgc;
       
-      b->volume += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *((unwrap1[0]+unwrap2[0]) + unwrap3[0]))/6.0;
-      b->mass += (((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *((unwrap1[0]+unwrap2[0]) + unwrap3[0]))/6.0) * density;
-      xcm[0] += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *(((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0])))/24.0;
-      xcm[1] += ((((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) *(((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1])))/24.0;
-      xcm[2] += ((((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) *(((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2])))/24.0;
-      xgc[0] += ((((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *(((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0])))/24.0;
-      xgc[1] += ((((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) *(((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1])))/24.0;
-      xgc[2] += ((((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) *(((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2])))/24.0;
-    }
+      b->volume += ((((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) *((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0]))/6.0;
+      b->mass += (((((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) *((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0]))/6.0) * density;
+      xcm[0] += ((((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) *(((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])))/24.0;
+      xcm[1] += ((((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][2]-unwrap[i1][2])) - ((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][2]-unwrap[i1][2]))) *(((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])))/24.0;
+      xcm[2] += ((((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][1]-unwrap[i1][1])) - ((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][1]-unwrap[i1][1]))) *(((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])))/24.0;
+      xgc[0] += ((((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) *(((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])))/24.0;
+      xgc[1] += ((((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][2]-unwrap[i1][2])) - ((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][2]-unwrap[i1][2]))) *(((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])))/24.0;
+      xgc[2] += ((((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][1]-unwrap[i1][1])) - ((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][1]-unwrap[i1][1]))) *(((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])))/24.0;
+     }
 
   // reverse communicate xcm, mass of all bodies
   commflag = XCM_MASS;
   comm->reverse_comm(this,9);
 
-  std::cout << " ---------------------- " << nlocal_body << " bodies owned by proc " << me << " ---------------------- "  << std::endl;
+//   std::cout << " ---------------------- " << nlocal_body << " bodies owned by proc " << me << " ---------------------- "  << std::endl;
   
-  for (ibody = 0; ibody < nlocal_body; ibody++) {
-    // if ((std::ceil(body[ibody].volume * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].volume * 10.0) / 10.0)) {
-      std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << " mass: " << body[ibody].mass << " natoms: " << body[ibody].natoms <<  std::endl;
-    // }
-}
+//   for (ibody = 0; ibody < nlocal_body; ibody++) {
+//     // if ((std::ceil(body[ibody].volume * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].volume * 10.0) / 10.0)) {
+//       std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << " mass: " << body[ibody].mass << " natoms: " << body[ibody].natoms <<  std::endl;
+//     // }
+// }
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     
@@ -3140,6 +3108,12 @@ void FixRigidAbrade::resetup_bodies_static()
 
   pre_neighbor();
 
+
+  for (i = 0; i < nlocal; i++) domain->unmap(x[i],xcmimage[i],unwrap[i]);
+  
+  comm->forward_comm_array(3,unwrap);
+
+
   // compute 6 moments of inertia of each body in Cartesian reference frame
   // dx,dy,dz = coords relative to center-of-mass
   // symmetric 3x3 inertia tensor stored in Voigt notation as 6-vector
@@ -3151,27 +3125,6 @@ void FixRigidAbrade::resetup_bodies_static()
   double dx,dy,dz;
   double *inertia;
 
-
-// Cycle through all angles and assign xcmimage to their ghost atoms
-  for (int n=0; n<nanglelist; n++){  
-    
-  // Cycle through atoms in angle
-    for (int i = 0; i < 3; i++){
-        // Check if i is a ghost atom
-        if (anglelist[n][i] >= nlocal){
-        
-        // Check if it exists for the other atoms in the angle and set its value equal to that 
-        for (int j = 1; j < 3; j++){
-          if (anglelist[n][(i+j)%3] < nlocal) {
-            xcmimage[anglelist[n][i]] = xcmimage[domain->closest_image(anglelist[n][i], anglelist[n][(i+j)%3])];
-            }
-          }
-        }
-      // Check if all angle atoms have a xcm
-      if (!xcmimage[anglelist[n][i]]) error->all(FLERR, "xcmimage not assigned for an angles' atom. Body volume and inertia maybe incorrectly calculated.");
-    }
-  }
-
     for (int n = 0; n < nanglelist; n++) {
       if (atom2body[anglelist[n][0]] < 0) continue;
       Body *b = &body[atom2body[anglelist[n][0]]];
@@ -3181,17 +3134,13 @@ void FixRigidAbrade::resetup_bodies_static()
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
 
-      domain->unmap(x[i1],xcmimage[i1],unwrap1);
-      domain->unmap(x[i2],xcmimage[i2],unwrap2);
-      domain->unmap(x[i3],xcmimage[i3],unwrap3);
-
       inertia = itensor[atom2body[anglelist[n][0]]];
-      inertia[0] += (((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) *(unwrap1[0]*(unwrap1[0]*unwrap1[0])+unwrap2[0]*((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*(((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0])));
-      inertia[1] += (((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) *(unwrap1[1]*(unwrap1[1]*unwrap1[1])+unwrap2[1]*((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*(((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1])));
-      inertia[2] += (((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) *(unwrap1[2]*(unwrap1[2]*unwrap1[2])+unwrap2[2]*((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*(((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2])));
-      inertia[3] += (((unwrap2[1]-unwrap1[1])*(unwrap3[2]-unwrap1[2])) - ((unwrap3[1]-unwrap1[1])*(unwrap2[2]-unwrap1[2]))) * (unwrap1[1]*((((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0]))+unwrap1[0]*(((unwrap1[0]+unwrap2[0]) + unwrap3[0])+unwrap1[0]))+unwrap2[1]*((((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0]))+unwrap2[0]*(((unwrap1[0]+unwrap2[0]) + unwrap3[0])+unwrap2[0]))+unwrap3[1]*((((unwrap1[0]*unwrap1[0])+unwrap2[0]*(unwrap1[0]+unwrap2[0]))+unwrap3[0]*((unwrap1[0]+unwrap2[0]) + unwrap3[0]))+unwrap3[0]*(((unwrap1[0]+unwrap2[0]) + unwrap3[0])+unwrap3[0])));
-      inertia[4] += (((unwrap3[0]-unwrap1[0])*(unwrap2[2]-unwrap1[2])) - ((unwrap2[0]-unwrap1[0])*(unwrap3[2]-unwrap1[2]))) * (unwrap1[2]*((((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1]))+unwrap1[1]*(((unwrap1[1]+unwrap2[1]) + unwrap3[1])+unwrap1[1]))+unwrap2[2]*((((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1]))+unwrap2[1]*(((unwrap1[1]+unwrap2[1]) + unwrap3[1])+unwrap2[1]))+unwrap3[2]*((((unwrap1[1]*unwrap1[1])+unwrap2[1]*(unwrap1[1]+unwrap2[1]))+unwrap3[1]*((unwrap1[1]+unwrap2[1]) + unwrap3[1]))+unwrap3[1]*(((unwrap1[1]+unwrap2[1]) + unwrap3[1])+unwrap3[1])));
-      inertia[5] += (((unwrap2[0]-unwrap1[0])*(unwrap3[1]-unwrap1[1])) - ((unwrap3[0]-unwrap1[0])*(unwrap2[1]-unwrap1[1]))) * (unwrap1[0]*((((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2]))+unwrap1[2]*(((unwrap1[2]+unwrap2[2]) + unwrap3[2])+unwrap1[2]))+unwrap2[0]*((((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2]))+unwrap2[2]*(((unwrap1[2]+unwrap2[2]) + unwrap3[2])+unwrap2[2]))+unwrap3[0]*((((unwrap1[2]*unwrap1[2])+unwrap2[2]*(unwrap1[2]+unwrap2[2]))+unwrap3[2]*((unwrap1[2]+unwrap2[2]) + unwrap3[2]))+unwrap3[2]*(((unwrap1[2]+unwrap2[2]) + unwrap3[2])+unwrap3[2])));
+      inertia[0] += (((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) *(unwrap[i1][0]*(unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*(((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])));
+      inertia[1] += (((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][2]-unwrap[i1][2])) - ((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][2]-unwrap[i1][2]))) *(unwrap[i1][1]*(unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*(((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])));
+      inertia[2] += (((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][1]-unwrap[i1][1])) - ((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][1]-unwrap[i1][1]))) *(unwrap[i1][2]*(unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*(((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])));
+      inertia[3] += (((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) * (unwrap[i1][1]*((((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0]))+unwrap[i1][0]*(((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])+unwrap[i1][0]))+unwrap[i2][1]*((((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0]))+unwrap[i2][0]*(((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])+unwrap[i2][0]))+unwrap[i3][1]*((((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0]))+unwrap[i3][0]*(((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])+unwrap[i3][0])));
+      inertia[4] += (((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][2]-unwrap[i1][2])) - ((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][2]-unwrap[i1][2]))) * (unwrap[i1][2]*((((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1]))+unwrap[i1][1]*(((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])+unwrap[i1][1]))+unwrap[i2][2]*((((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1]))+unwrap[i2][1]*(((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])+unwrap[i2][1]))+unwrap[i3][2]*((((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1]))+unwrap[i3][1]*(((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])+unwrap[i3][1])));
+      inertia[5] += (((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][1]-unwrap[i1][1])) - ((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][1]-unwrap[i1][1]))) * (unwrap[i1][0]*((((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2]))+unwrap[i1][2]*(((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])+unwrap[i1][2]))+unwrap[i2][0]*((((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2]))+unwrap[i2][2]*(((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])+unwrap[i2][2]))+unwrap[i3][0]*((((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2]))+unwrap[i3][2]*(((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])+unwrap[i3][2])));
     }
 
   // reverse communicate inertia tensor of all bodies
@@ -3218,7 +3167,7 @@ void FixRigidAbrade::resetup_bodies_static()
     tensor[1][2] = tensor[2][1] = -body[ibody].density * ((itensor[ibody][4]/120.0 - body[ibody].volume*body[ibody].xcm[1]*body[ibody].xcm[2]));  
     tensor[0][2] = tensor[2][0] = -body[ibody].density * ((itensor[ibody][5]/120.0 - body[ibody].volume*body[ibody].xcm[2]*body[ibody].xcm[0]));
 
-    std::cout << me << ": pre diag Body " << ibody << " inertia: (" << tensor[0][0] << ", "  <<     tensor[1][1] << ", "  <<  tensor[2][2]  << ") Volume: " <<  body[ibody].volume << " Mass: " <<  body[ibody].mass <<" Density: "<< body[ibody].density << std::endl;
+    // std::cout << me << ": pre diag Body " << ibody << " inertia: (" << tensor[0][0] << ", "  <<     tensor[1][1] << ", "  <<  tensor[2][2]  << ") Volume: " <<  body[ibody].volume << " Mass: " <<  body[ibody].mass <<" Density: "<< body[ibody].density << std::endl;
 
 
 
@@ -3276,12 +3225,12 @@ void FixRigidAbrade::resetup_bodies_static()
   commflag = INITIAL;
   comm->forward_comm(this,29);
 
-  std::cout << me << ": nlocalbodies = " << nlocal_body << std::endl;
-  if (nlocal_body > 0){
-    for (ibody = 0; ibody < nlocal_body; ibody++) {
-      std::cout << me << ": 1st run Body " << ibody << " inertia: (" << body[ibody].inertia[0] << ", "  << body[ibody].inertia[1] << ", "  << body[ibody].inertia[2] << ") Volume: " <<  body[ibody].volume << " Mass: " <<  body[ibody].mass <<" Density: "<< body[ibody].density << std::endl;
-    }
-  }
+  // std::cout << me << ": nlocalbodies = " << nlocal_body << std::endl;
+  // if (nlocal_body > 0){
+  //   for (ibody = 0; ibody < nlocal_body; ibody++) {
+  //     std::cout << me << ": 1st run Body " << ibody << " inertia: (" << body[ibody].inertia[0] << ", "  << body[ibody].inertia[1] << ", "  << body[ibody].inertia[2] << ") Volume: " <<  body[ibody].volume << " Mass: " <<  body[ibody].mass <<" Density: "<< body[ibody].density << std::endl;
+  //   }
+  // }
   // displace = initial atom coords in basis of principal axes
   // set displace = 0.0 for atoms not in any rigid body
   // for extended particles, set their orientation wrt to rigid body
@@ -3300,11 +3249,10 @@ void FixRigidAbrade::resetup_bodies_static()
 
     Body *b = &body[atom2body[i]];
 
-    domain->unmap(x[i],xcmimage[i],unwrap);
     xcm = b->xcm;
-    delta[0] = unwrap[0] - xcm[0];
-    delta[1] = unwrap[1] - xcm[1];
-    delta[2] = unwrap[2] - xcm[2];
+    delta[0] = unwrap[i][0] - xcm[0];
+    delta[1] = unwrap[i][1] - xcm[1];
+    delta[2] = unwrap[i][2] - xcm[2];
 
     MathExtra::transpose_matvec(b->ex_space,b->ey_space,b->ez_space,
                                 delta,displace[i]);
@@ -3378,16 +3326,16 @@ void FixRigidAbrade::resetup_bodies_static()
   commflag = ITENSOR;
   comm->reverse_comm(this,6);
 
-  if (nlocal_body > 0)std::cout << me << ": Body " << 0 << " inertia: (" << body[0].inertia[0] << ", "  << body[0].inertia[1] << ", "  << body[0].inertia[2] << ") Volume: " <<  body[0].volume << " Mass: " <<  body[0].mass <<" Density: "<< body[0].density << std::endl;
-  for (ibody = 0; ibody < nlocal_body; ibody++) {
-    // std::cout << me << ": testing body " << ibody << std::endl;
-    if (
-      (std::ceil(body[ibody].inertia[0] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[0] * 10.0) / 10.0) ||
-      (std::ceil(body[ibody].inertia[1] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[1] * 10.0) / 10.0) ||
-      (std::ceil(body[ibody].inertia[2] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[2] * 10.0) / 10.0) 
-      ) {std::cout << me << ": Dissagreement with Body " << ibody << " inertia: (" << body[ibody].inertia[0] << ", "  << body[ibody].inertia[1] << ", "  << body[ibody].inertia[2] << ") Volume: " <<  body[ibody].volume << " Mass: " <<  body[ibody].mass << " Density: "<< body[ibody].density << std::endl;}
+//   if (nlocal_body > 0)std::cout << me << ": Body " << 0 << " inertia: (" << body[0].inertia[0] << ", "  << body[0].inertia[1] << ", "  << body[0].inertia[2] << ") Volume: " <<  body[0].volume << " Mass: " <<  body[0].mass <<" Density: "<< body[0].density << std::endl;
+//   for (ibody = 0; ibody < nlocal_body; ibody++) {
+//     // std::cout << me << ": testing body " << ibody << std::endl;
+//     if (
+//       (std::ceil(body[ibody].inertia[0] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[0] * 10.0) / 10.0) ||
+//       (std::ceil(body[ibody].inertia[1] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[1] * 10.0) / 10.0) ||
+//       (std::ceil(body[ibody].inertia[2] * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].inertia[2] * 10.0) / 10.0) 
+//       ) {std::cout << me << ": Dissagreement with Body " << ibody << " inertia: (" << body[ibody].inertia[0] << ", "  << body[ibody].inertia[1] << ", "  << body[ibody].inertia[2] << ") Volume: " <<  body[ibody].volume << " Mass: " <<  body[ibody].mass << " Density: "<< body[ibody].density << std::endl;}
     
-}
+// }
 
   // error check that re-computed moments of inertia match diagonalized ones
   // do not do test for bodies with params read from inpfile
@@ -3426,6 +3374,7 @@ void FixRigidAbrade::resetup_bodies_static()
 
   // clean up
   memory->destroy(itensor);
+  memory->destroy(unwrap);
 
 }
 
