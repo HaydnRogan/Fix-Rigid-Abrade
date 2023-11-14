@@ -20,6 +20,8 @@ FixStyle(rigid/abrade,FixRigidAbrade);
 #ifndef LMP_FIX_RIGID_ABRADE_H
 #define LMP_FIX_RIGID_ABRADE_H
 
+#include <vector>
+#include <unordered_set>
 #include "fix.h"
 
 namespace LAMMPS_NS {
@@ -70,6 +72,8 @@ class FixRigidAbrade : public Fix {
   double memory_usage() override;
 
   double **vertexdata;   // array to store the normals, areas, and displacement velocities of each atom (public to allow access from pairstyles)
+  std::vector<tagint> abrasion_list_v;
+  std::unordered_set<tagint> abrasion_list_s;
 
 private:
 
@@ -84,7 +88,7 @@ private:
   int triclinic;
   
   // Modified Commflags
-  enum{FULL_BODY, INITIAL, IMAGE, FINAL, FORCE_TORQUE, DISPLACEMENT_VEL, VCM_ANGMOM, XCM_MASS, MASS_NATOMS, ATOM_MASS, DISPLACE, NORMALS, BODYTAG, ITENSOR, DOF};
+  enum{FULL_BODY, INITIAL, XCM_IMAGE, FINAL, FORCE_TORQUE, DISPLACEMENT_VEL, VCM_ANGMOM, XCM_MASS, MASS_NATOMS, ATOM_MASS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF};
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
@@ -101,6 +105,7 @@ private:
   int hstyle, mustyle, densitystyle;
   int hvar, muvar, densityvar;
   char *hstr, *mustr, *densitystr;
+
 
 
   struct Body {
@@ -145,6 +150,7 @@ private:
   imageint *xcmimage;    // internal image flags for atoms in rigid bodies
                          // set relative to in-box xcm of each body
   double **displace;     // displacement of each atom in body coords
+  double **unwrap;     // unwrapped coords of each atom in global coords
   int *eflags;           // flags for extended particles
   double **orient;       // orientation vector of particle wrt rigid body
   double **dorient;      // orientation of dipole mu wrt rigid body
