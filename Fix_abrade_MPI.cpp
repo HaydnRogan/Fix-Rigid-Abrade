@@ -58,7 +58,7 @@ using namespace RigidConst;
 FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   Fix(lmp, narg, arg), step_respa(nullptr),
   inpfile(nullptr), body(nullptr), bodyown(nullptr), bodytag(nullptr), atom2body(nullptr), vertexdata(nullptr), list(nullptr),
-  xcmimage(nullptr), displace(nullptr), eflags(nullptr), orient(nullptr), dorient(nullptr),
+  xcmimage(nullptr), displace(nullptr), unwrap(nullptr), eflags(nullptr), orient(nullptr), dorient(nullptr),
   avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr), counts(nullptr),
   itensor(nullptr), mass_body(nullptr), langextra(nullptr), random(nullptr),
   id_dilate(nullptr), id_gravity(nullptr), onemols(nullptr)
@@ -97,6 +97,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   vertexdata = nullptr;
   xcmimage = nullptr;
   displace = nullptr;
+  unwrap = nullptr;
   eflags = nullptr;
   orient = nullptr;
   dorient = nullptr;
@@ -545,6 +546,7 @@ FixRigidAbrade::~FixRigidAbrade()
   memory->destroy(vertexdata);
   memory->destroy(xcmimage);
   memory->destroy(displace);
+  memory->destroy(unwrap);
   memory->destroy(eflags);
   memory->destroy(orient);
   memory->destroy(dorient);
@@ -734,7 +736,7 @@ void FixRigidAbrade::setup(int vflag)
 
   double *xcm,*fcm,*tcm;
   double dx,dy,dz;
-  double unwrap[3];
+
 
   for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++) {
     fcm = body[ibody].fcm;
@@ -752,11 +754,11 @@ void FixRigidAbrade::setup(int vflag)
     fcm[1] += f[i][1];
     fcm[2] += f[i][2];
 
-    domain->unmap(x[i],xcmimage[i],unwrap);
+    domain->unmap(x[i],xcmimage[i],unwrap[i]);
     xcm = b->xcm;
-    dx = unwrap[0] - xcm[0];
-    dy = unwrap[1] - xcm[1];
-    dz = unwrap[2] - xcm[2];
+    dx = unwrap[i][0] - xcm[0];
+    dy = unwrap[i][1] - xcm[1];
+    dz = unwrap[i][2] - xcm[2];
 
     tcm = b->torque;
     tcm[0] += dy * f[i][2] - dz * f[i][1];
@@ -1240,19 +1242,9 @@ void FixRigidAbrade::areas_and_normals() {
       length = sqrt(norm1*norm1 + norm2*norm2 + norm3*norm3);
 
       // Normalising the length of the normals
-      double normals[3];
-      normals[0] = norm1/length;
-      normals[1] = norm2/length;
-      normals[2] = norm3/length; 
-
-      // Converting from body coordinates to global coordinates
-      // This allows for the normals to be outputed in the dump file and thus visualised in ovito
-      double global_normals[3];
-      Body *b = &body[atom2body[i]];
-      MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,normals,global_normals);
-      vertexdata[i][0] = global_normals[0];
-      vertexdata[i][1] = global_normals[1];
-      vertexdata[i][2] = global_normals[2];
+      vertexdata[i][0] = norm1/length;
+      vertexdata[i][1] = norm2/length;
+      vertexdata[i][2] = norm3/length; 
       
     } else {
       vertexdata[i][0] = 0.0;
@@ -1267,11 +1259,12 @@ void FixRigidAbrade::areas_and_normals() {
 
 void FixRigidAbrade::displacement_of_atom(int i, int j, double x_rel[3], double v_rel[3]) {
 
-  // If normals were calculated in body coordinates they would have to be converted here 
+  // Converting normals from body coordinates to global system so they can be compared with atom velocities
+  double normals[3] = {vertexdata[i][0], vertexdata[i][1], vertexdata[i][2]};
   double global_normals[3];
-  global_normals[0] = vertexdata[i][0];
-  global_normals[1] = vertexdata[i][1];
-  global_normals[2] = vertexdata[i][2];
+
+  Body *b = &body[atom2body[i]];
+  MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,normals,global_normals);
 
   // Checking if the normal and relative velocities are faceing towards oneanother, indicating the gap between i and j is closing
   bool gap_is_shrinking = (MathExtra::dot3(v_rel, global_normals) < 0);
@@ -1376,7 +1369,6 @@ void FixRigidAbrade::compute_forces_and_torques()
   int nlocal = atom->nlocal;
 
   double dx,dy,dz;
-  double unwrap[3];
   double *xcm,*fcm,*tcm;
 
   for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++) {
@@ -1395,11 +1387,11 @@ void FixRigidAbrade::compute_forces_and_torques()
     fcm[1] += f[i][1];
     fcm[2] += f[i][2];
 
-    domain->unmap(x[i],xcmimage[i],unwrap);
+    domain->unmap(x[i],xcmimage[i],unwrap[i]);
     xcm = b->xcm;
-    dx = unwrap[0] - xcm[0];
-    dy = unwrap[1] - xcm[1];
-    dz = unwrap[2] - xcm[2];
+    dx = unwrap[i][0] - xcm[0];
+    dy = unwrap[i][1] - xcm[1];
+    dz = unwrap[i][2] - xcm[2];
 
     tcm = b->torque;
     tcm[0] += dy*f[i][2] - dz*f[i][1];
@@ -2468,25 +2460,21 @@ void FixRigidAbrade::setup_bodies_static()
   for (i = 0; i < nlocal; i++){
     if (atom2body[i] < 0) continue;
     
+    // Calculated unwrapped coords for all atoms in bodies
+    domain->unmap(x[i],xcmimage[i],unwrap[i]);  
+
     Body *b = &body[atom2body[i]];
     b->natoms++;
   }
 
   int nanglelist = neighbor->nanglelist;
   int **anglelist = neighbor->anglelist;
-  double unwrap1[3], unwrap2[3], unwrap3[3];
   
   int i1, i2, i3;
   
 // communicate unwrapped position of owned atoms to ghost atoms
-
-  double **unwrap;
-  
-  memory->create(unwrap,atom->nmax,3,"domain:unwrap");
-
-  for (i = 0; i < nlocal; i++) domain->unmap(x[i],xcmimage[i],unwrap[i]);
-  
-  comm->forward_comm_array(3,unwrap);
+  commflag = UNWRAP;
+  comm->forward_comm(this,3);
 
 
   // Calculating body volume, mass and COM from constituent tetrahedra
@@ -2950,7 +2938,6 @@ void FixRigidAbrade::setup_bodies_static()
   // clean up
 
   memory->destroy(itensor);
-  memory->destroy(unwrap);
   if (inpfile) memory->destroy(inbody);
 
   // std::cout << me << ": --------- Finished setup_bodies_static() for " << nlocal_body << " bodies -----------" << std::endl;
@@ -3014,25 +3001,20 @@ void FixRigidAbrade::resetup_bodies_static()
   for (i = 0; i < nlocal; i++){
     if (atom2body[i] < 0) continue;
     
+    // Calculated unwrapped coords of all local atoms in bodies
+    domain->unmap(x[i],xcmimage[i],unwrap[i]);
+
     Body *b = &body[atom2body[i]];
     b->natoms++;
   }
 
   int nanglelist = neighbor->nanglelist;
   int **anglelist = neighbor->anglelist;
-  double unwrap1[3], unwrap2[3], unwrap3[3];
-  
     int i1, i2, i3;
 
 // communicate unwrapped position of owned atoms to ghost atoms
-
-  double **unwrap;
-  
-  memory->create(unwrap,atom->nmax,3,"domain:unwrap");
-
-  for (i = 0; i < nlocal; i++) domain->unmap(x[i],xcmimage[i],unwrap[i]);
-  
-  comm->forward_comm_array(3,unwrap);
+  commflag = UNWRAP;
+  comm->forward_comm(this,3);
 
 
   // Calculating body volume, mass and COM from constituent tetrahedra
@@ -3109,9 +3091,15 @@ void FixRigidAbrade::resetup_bodies_static()
   pre_neighbor();
 
 
-  for (i = 0; i < nlocal; i++) domain->unmap(x[i],xcmimage[i],unwrap[i]);
-  
-  comm->forward_comm_array(3,unwrap);
+  // recalculating unwrapped coordinates of all atoms in bodies since we have recet xcmimage flags
+  for (i = 0; i < nlocal; i++){
+
+      if (atom2body[i] < 0) continue;
+      domain->unmap(x[i],xcmimage[i],unwrap[i]); 
+     }
+
+  commflag = UNWRAP;
+  comm->forward_comm(this,3);
 
 
   // compute 6 moments of inertia of each body in Cartesian reference frame
@@ -3374,7 +3362,6 @@ void FixRigidAbrade::resetup_bodies_static()
 
   // clean up
   memory->destroy(itensor);
-  memory->destroy(unwrap);
 
 }
 
@@ -3402,7 +3389,6 @@ void FixRigidAbrade::setup_bodies_dynamic()
 
   double *xcm,*vcm,*acm;
   double dx,dy,dz;
-  double unwrap[3];
 
   for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++) {
     vcm = body[ibody].vcm;
@@ -3423,11 +3409,11 @@ void FixRigidAbrade::setup_bodies_dynamic()
     vcm[1] += v[i][1] * massone;
     vcm[2] += v[i][2] * massone;
 
-    domain->unmap(x[i],xcmimage[i],unwrap);
+    domain->unmap(x[i],xcmimage[i],unwrap[i]);
     xcm = b->xcm;
-    dx = unwrap[0] - xcm[0];
-    dy = unwrap[1] - xcm[1];
-    dz = unwrap[2] - xcm[2];
+    dx = unwrap[i][0] - xcm[0];
+    dy = unwrap[i][1] - xcm[1];
+    dz = unwrap[i][2] - xcm[2];
 
     acm = b->angmom;
     acm[0] += dy * massone*v[i][2] - dz * massone*v[i][1];
@@ -3754,6 +3740,7 @@ void FixRigidAbrade::grow_arrays(int nmax)
 
   memory->grow(xcmimage,nmax,"rigid/abrade:xcmimage");
   memory->grow(displace,nmax,3,"rigid/abrade:displace");
+  memory->grow(unwrap,nmax,3,"rigid/abrade:unwrap");
   if (extended) {
     memory->grow(eflags,nmax,"rigid/abrade:eflags");
     if (orientflag) memory->grow(orient,nmax,orientflag,"rigid/abrade:orient");
@@ -3782,6 +3769,11 @@ void FixRigidAbrade::copy_arrays(int i, int j, int delflag)
   displace[j][0] = displace[i][0];
   displace[j][1] = displace[i][1];
   displace[j][2] = displace[i][2];
+
+  unwrap[j][0] = unwrap[i][0];
+  unwrap[j][1] = unwrap[i][1];
+  unwrap[j][2] = unwrap[i][2];
+
 
   for (int q = 0; q < size_peratom_cols; q++){
     vertexdata[j][q] = vertexdata[i][q];}
@@ -3832,6 +3824,11 @@ void FixRigidAbrade::set_arrays(int i)
   displace[i][0] = 0.0;
   displace[i][1] = 0.0;
   displace[i][2] = 0.0;
+  unwrap[i][0] = 0.0;
+  unwrap[i][1] = 0.0;
+  unwrap[i][2] = 0.0;
+
+
 
   vertexdata[i][0] = 0.0;
   vertexdata[i][1] = 0.0;
@@ -4146,6 +4143,14 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
       buf[m++] = displace[j][2];
     }
 
+  } else if (commflag == UNWRAP) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      buf[m++] = unwrap[j][0];
+      buf[m++] = unwrap[j][1];
+      buf[m++] = unwrap[j][2];
+    }
+
   } else if (commflag == MASS_NATOMS) {
     for (i = 0; i < n; i++) {
       j = list[i];
@@ -4262,6 +4267,13 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
       displace[i][0] = buf[m++];
       displace[i][1] = buf[m++];
       displace[i][2] = buf[m++];
+    }
+
+  } else if (commflag == UNWRAP) {
+    for (i = first; i < last; i++) {
+      unwrap[i][0] = buf[m++];
+      unwrap[i][1] = buf[m++];
+      unwrap[i][2] = buf[m++];
     }
 
   } else if (commflag == MASS_NATOMS) {
