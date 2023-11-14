@@ -111,6 +111,10 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
     vertexdata[i][3] = 0.0;
     vertexdata[i][4] = vertexdata[i][5] = vertexdata[i][6] = 0.0;
   }
+
+    abrasion_list_s = {};
+    abrasion_list_v = {};
+
   // parse args for rigid body specification
 
   int *mask = atom->mask;
@@ -696,7 +700,9 @@ void FixRigidAbrade::setup_pre_neighbor()
 {
   if (reinitflag || !setupflag){
     neighbor->build_topology();
-    setup_bodies_static();}
+    setup_bodies_static();
+    areas_and_normals();
+    }
   else pre_neighbor();
 
   if ((reinitflag || !setupflag) && !inpfile)
@@ -1007,19 +1013,8 @@ void FixRigidAbrade::post_force(int /*vflag*/)
   int ** firstneigh = list->firstneigh;
   int nlocal = atom->nlocal;
 
-  // Calculate the area and normal associated with each atom
-  // Uses displace[i] of ghost atoms which will need to be forward communicated each time
-  commflag = DISPLACE;
-  comm->forward_comm(this,3);
-  
-  areas_and_normals();
-
   // Don't need to forward communicate normals to ghost atoms since they are only used for atom i which is local 
   
-  // Forward communicate bodytag to check if an atom and its neighbour (possibly a ghost atom) are in the same body
-  commflag = BODYTAG;
-  comm->forward_comm(this,1);
-
   // loop over central atoms in neighbor lists 
   for (int ii = 0; ii < inum; ii ++){
   
@@ -1092,6 +1087,12 @@ void FixRigidAbrade::areas_and_normals() {
 
   // Reset vertex data for local and ghost atoms -> since the ghost atoms may be be accessed when cycling through angles
   for (int i = 0; i < (nlocal + nghost); i++) {
+
+
+    // if the atom doesnt belong to a body that has been abraded we can skip
+    if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
+
+
     vertexdata[i][0] = 0.0; // x normal
     vertexdata[i][1] = 0.0; // y normal
     vertexdata[i][2] = 0.0; // z normal
@@ -1109,6 +1110,10 @@ void FixRigidAbrade::areas_and_normals() {
   //  Storing each atom in each angle - Not currently specified to a single body (potential optimisation here if we were to only call areas and normals on bodies which have been abraded)
   for (n = 0; n < nanglelist; n++) {
     i1 = anglelist[n][0];
+
+    // if the atom doesnt belong to a body that has been abraded we can skip
+    if(abrasion_list_s.find(bodytag[i1]) == abrasion_list_s.end()) continue;
+
     i2 = anglelist[n][1];
     i3 = anglelist[n][2];
     type = anglelist[n][3];
@@ -1235,6 +1240,10 @@ void FixRigidAbrade::areas_and_normals() {
   comm->reverse_comm(this,4);
 
   for (int i = 0; i < nlocal; i++) {
+
+    // if the atom doesnt belong to a body that has been abraded we can skip
+    if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
+
     if (vertexdata[i][3] > 0) {
       norm1 = vertexdata[i][0];
       norm2 = vertexdata[i][1];
@@ -1511,7 +1520,12 @@ void FixRigidAbrade::final_integrate()
     global_displace_vel[0] = vertexdata[i][4];
     global_displace_vel[1] = vertexdata[i][5];
     global_displace_vel[2] = vertexdata[i][6];
+    
     if (!MathExtra::len3(global_displace_vel)) continue;
+
+    // Adding the body of atom i to a list of bodies that have been abraded
+    abrasion_list_s.insert(bodytag[i]);
+
     
     // Convert displacement velocities from global coordinates to body coordinates 
     Body *b = &body[atom2body[i]];
@@ -1554,15 +1568,89 @@ void FixRigidAbrade::final_integrate()
     }
   }
 
-// forward communicate displace[i] to ghost atoms on neighbouring processors
-  commflag = DISPLACE;
-  comm->forward_comm(this,3);
+  abrasion_list_v.clear();
+  abrasion_list_v.insert(abrasion_list_v.end(), abrasion_list_s.begin(), abrasion_list_s.end());
+
+  //   std::cout << me << ": Abrading bodies at t = " << update->ntimestep << "\t [\t";
+  // for (int i = 0; i < abrasion_list_v.size(); i++){
+  //   std::cout << abrasion_list_v[i] << "\t";
+  // } std::cout << "]\n";
+
+// ------------------------
+
+    int locNumFrag = abrasion_list_v.size();
+
+    MPI_Barrier(world);  // for printing
+
+    std::vector<int> numfrags(nprocs);
+    MPI_Allgather(&locNumFrag, 1, MPI_INT, &numfrags[0], 1, MPI_INT, world);
+
+    int _numFrag = 0;
+    for (int i=0; i<nprocs; i++) 
+        _numFrag += numfrags[i];
+
+    MPI_Barrier(world); // for printing
+
+    std::vector<int> outVector (_numFrag);
+    int displ[nprocs]; 
+
+    if (me == 0) {
+        double sum = 0;
+        for (int i = 0; i < nprocs; ++i) {
+            displ[i] = sum;
+            // std::cout << me << " : " << i << " : " << sum << std::endl;
+            sum += numfrags[i];
+        }
+    }
+
+    MPI_Gatherv(&abrasion_list_v[0], numfrags[me], MPI_INT, &outVector[0], &numfrags[0], &displ[0], MPI_INT, 0, world);
+    MPI_Bcast(&outVector[0],outVector.size(),MPI_INT,0,world);
+
+    abrasion_list_v = outVector;
+
+  //   std::cout << me << ": POST COMM Abrading bodies at t = " << update->ntimestep << "\t [\t";
+  // for (int i = 0; i < abrasion_list_v.size(); i++){
+  //   std::cout << abrasion_list_v[i] << "\t";
+  // } std::cout << "]\n\n";
+
+// -------------------------------
+
+  abrasion_list_s.clear();
+  
+  for (int i = 0; i < abrasion_list_v.size(); i++){
+    abrasion_list_s.insert(abrasion_list_v[i]);
+  }
 
 // recalculate properties for each body
-// if (!(update->ntimestep % 50)){
-  // std::cout << me << "\n: resetting bodies at t = " << update->ntimestep << std::endl;
+  if(!(abrasion_list_s.empty())){
+  
+  // std::cout<< " calling resetup_bodies static\n";
+  
   resetup_bodies_static();
-// }
+    
+  // // Calculate the area and normal associated with each atom
+  // // Uses displace[i] of ghost atoms which will need to be forward communicated each time
+  // commflag = DISPLACE;
+  // comm->forward_comm(this,3);
+  
+  
+  areas_and_normals();
+  abrasion_list_s.clear();
+  abrasion_list_v.clear();
+
+  // Cycling through the local atoms and summing their mass to the respective body
+  for (int i = 0; i < nlocal; i++){
+  
+    vertexdata[i][4] = 0.0;
+    vertexdata[i][5] = 0.0;
+    vertexdata[i][6] = 0.0;
+
+  }
+  
+  }
+  
+  // areas_and_normals();
+
 
 }
 
@@ -2443,7 +2531,14 @@ void FixRigidAbrade::setup_bodies_static()
   double *xcm;
   double *xgc;
 
+  abrasion_list_s.clear();
+
   for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++) {
+    
+    // Add all bodies on proc to the abrade_list_v since we want the properties of all to be communicated initially
+    
+    abrasion_list_s.insert(bodytag[body[ibody].ilocal]);
+
     xcm = body[ibody].xcm;
     xgc = body[ibody].xgc;
     xcm[0] = xcm[1] = xcm[2] = 0.0;
@@ -2985,6 +3080,10 @@ void FixRigidAbrade::resetup_bodies_static()
   double *xgc;
 
   for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++) {
+
+    // if the body hasn't been abraded we don't update anything
+    if(abrasion_list_s.find(bodytag[body[ibody].ilocal]) == abrasion_list_s.end()) continue;
+
     xcm = body[ibody].xcm;
     xgc = body[ibody].xgc;
     xcm[0] = xcm[1] = xcm[2] = 0.0;
@@ -2999,6 +3098,11 @@ void FixRigidAbrade::resetup_bodies_static()
 
 // Cycling through the local atoms and summing their mass to the respective body
   for (i = 0; i < nlocal; i++){
+
+    // if the atom's body hasn't been abraded we don't update anything
+    if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
+
+
     if (atom2body[i] < 0) continue;
     
     // Calculated unwrapped coords of all local atoms in bodies
@@ -3020,6 +3124,10 @@ void FixRigidAbrade::resetup_bodies_static()
   // Calculating body volume, mass and COM from constituent tetrahedra
   for (int n = 0; n < nanglelist; n++) {
       if (atom2body[anglelist[n][0]] < 0) continue;
+
+      // if the angle's body hasn't been abraded we don't update anything
+      if(abrasion_list_s.find(bodytag[anglelist[n][0]]) == abrasion_list_s.end()) continue;
+
       
       Body *b = &body[atom2body[anglelist[n][0]]];
     
@@ -3056,6 +3164,9 @@ void FixRigidAbrade::resetup_bodies_static()
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     
+     // if the body hasn't been abraded we don't update anything
+    if(abrasion_list_s.find(bodytag[body[ibody].ilocal]) == abrasion_list_s.end()) continue;
+
     xcm = body[ibody].xcm;
     xgc = body[ibody].xgc;
 
@@ -3075,8 +3186,11 @@ void FixRigidAbrade::resetup_bodies_static()
 
   // Cycling through the local atoms and setting their mass to the respective (body mass/natoms) (therefore total mass of consituent atoms sums to the body mass)
   for (i = 0; i < nlocal; i++) {
-
     if (atom2body[i] < 0) continue;
+
+    // if the atom's body hasn't been abraded we don't update anything
+    if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
+
     Body *b = &body[atom2body[i]];
     rmass[i] = b->mass / b->natoms; // (Note - this does not affect the rigidbody dynamics but it may be pertient for mass/energy balances to properly account for material removed from the system during abrasion)
   }
@@ -3093,8 +3207,11 @@ void FixRigidAbrade::resetup_bodies_static()
 
   // recalculating unwrapped coordinates of all atoms in bodies since we have recet xcmimage flags
   for (i = 0; i < nlocal; i++){
-
       if (atom2body[i] < 0) continue;
+
+      // if the atom's body hasn't been abraded we don't update anything
+      if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
+
       domain->unmap(x[i],xcmimage[i],unwrap[i]); 
      }
 
@@ -3115,6 +3232,10 @@ void FixRigidAbrade::resetup_bodies_static()
 
     for (int n = 0; n < nanglelist; n++) {
       if (atom2body[anglelist[n][0]] < 0) continue;
+
+      // if the angle's body hasn't been abraded we don't update anything
+      if(abrasion_list_s.find(bodytag[anglelist[n][0]]) == abrasion_list_s.end()) continue;
+
       Body *b = &body[atom2body[anglelist[n][0]]];
     
       // Storing the three atoms in each angle
@@ -3146,6 +3267,10 @@ void FixRigidAbrade::resetup_bodies_static()
   double *ex,*ey,*ez;
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
+
+
+    // if the body hasn't been abraded we don't update anything
+    if(abrasion_list_s.find(bodytag[body[ibody].ilocal]) == abrasion_list_s.end()) continue;
 
     tensor[0][0] = body[ibody].density * (((itensor[ibody][1] + itensor[ibody][2])/60.0) - body[ibody].volume*(body[ibody].xcm[1]*body[ibody].xcm[1] + body[ibody].xcm[2]*body[ibody].xcm[2]));
     tensor[1][1] = body[ibody].density * (((itensor[ibody][0] + itensor[ibody][2])/60.0) - body[ibody].volume*(body[ibody].xcm[2]*body[ibody].xcm[2] + body[ibody].xcm[0]*body[ibody].xcm[0]));
@@ -3230,10 +3355,15 @@ void FixRigidAbrade::resetup_bodies_static()
   double theta_body;
 
   for (i = 0; i < nlocal; i++) {
+    
     if (atom2body[i] < 0) {
       displace[i][0] = displace[i][1] = displace[i][2] = 0.0;
       continue;
     }
+
+    // if the atom's body hasn't been abraded we don't update anything
+    if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
+
 
     Body *b = &body[atom2body[i]];
 
@@ -3288,12 +3418,23 @@ void FixRigidAbrade::resetup_bodies_static()
   // 3 off-diagonal moments should be 0.0
   // extended particles may contribute extra terms to moments of inertia
 
-  for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++)
+  for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++){
+  
+     // if the body hasn't been abraded we don't update anything
+    if(abrasion_list_s.find(bodytag[body[ibody].ilocal]) == abrasion_list_s.end()) continue;
+
     for (i = 0; i < 6; i++) itensor[ibody][i] = 0.0;
+    
+    }
 
   for (int n = 0; n < nanglelist; n++) {
     if (atom2body[anglelist[n][0]] < 0) continue;
     
+    // if the angle's body hasn't been abraded we don't update anything
+    if(abrasion_list_s.find(bodytag[anglelist[n][0]]) == abrasion_list_s.end()) continue;
+
+
+
     i1 = anglelist[n][0];
     i2 = anglelist[n][1];
     i3 = anglelist[n][2];
@@ -3330,6 +3471,12 @@ void FixRigidAbrade::resetup_bodies_static()
 
   double norm;
   for (ibody = 0; ibody < nlocal_body; ibody++) {
+    
+
+    // if the body hasn't been abraded we don't check since the inertia hasn't been updated
+    if(abrasion_list_s.find(bodytag[body[ibody].ilocal]) == abrasion_list_s.end()) continue;
+
+    
     inertia = body[ibody].inertia;
 
     if (inertia[0] == 0.0) {
@@ -4138,6 +4285,10 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
   } else if (commflag == DISPLACE) {
     for (i = 0; i < n; i++) {
       j = list[i];
+      
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[j]) == abrasion_list_s.end()) continue;
+
       buf[m++] = displace[j][0];
       buf[m++] = displace[j][1];
       buf[m++] = displace[j][2];
@@ -4146,6 +4297,10 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
   } else if (commflag == UNWRAP) {
     for (i = 0; i < n; i++) {
       j = list[i];
+
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[j]) == abrasion_list_s.end()) continue;
+
       buf[m++] = unwrap[j][0];
       buf[m++] = unwrap[j][1];
       buf[m++] = unwrap[j][2];
@@ -4155,6 +4310,10 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
     for (i = 0; i < n; i++) {
       j = list[i];
       if (bodyown[j] < 0) continue;
+
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[j]) == abrasion_list_s.end()) continue;
+
       buf[m++] = body[bodyown[j]].mass;
       buf[m++] = body[bodyown[j]].natoms;
     }
@@ -4162,6 +4321,10 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
   } else if (commflag == ATOM_MASS) {
     for (i = 0; i < n; i++) {
       j = list[i];
+
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[j]) == abrasion_list_s.end()) continue;
+
       buf[m++] = rmass[j];
     }
 
@@ -4264,6 +4427,10 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
 
   } else if (commflag == DISPLACE) {
     for (i = first; i < last; i++) {
+
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
+
       displace[i][0] = buf[m++];
       displace[i][1] = buf[m++];
       displace[i][2] = buf[m++];
@@ -4271,6 +4438,10 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
 
   } else if (commflag == UNWRAP) {
     for (i = first; i < last; i++) {
+
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
+
       unwrap[i][0] = buf[m++];
       unwrap[i][1] = buf[m++];
       unwrap[i][2] = buf[m++];
@@ -4279,12 +4450,20 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
   } else if (commflag == MASS_NATOMS) {
     for (i = first; i < last; i++) {
       if (bodyown[i] < 0) continue;
+
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
+
       body[bodyown[i]].mass = buf[m++];
       body[bodyown[i]].natoms = buf[m++];
     }
 
   } else if (commflag == ATOM_MASS) {
     for (i = first; i < last; i++) {
+
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
+      
       rmass[i] = buf[m++];
     }
 
@@ -4352,6 +4531,11 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
   } else if (commflag == XCM_MASS) {
     for (i = first; i < last; i++) {
       if (bodyown[i] < 0) continue;
+
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
+
+
       xcm = body[bodyown[i]].xcm;
       xgc = body[bodyown[i]].xgc;
       buf[m++] = xcm[0];
@@ -4368,6 +4552,10 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
   } else if (commflag == ITENSOR) {
     for (i = first; i < last; i++) {
       if (bodyown[i] < 0) continue;
+      
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
+
       j = bodyown[i];
       buf[m++] = itensor[j][0];
       buf[m++] = itensor[j][1];
@@ -4379,6 +4567,10 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
 
   } else if (commflag == NORMALS) {
     for (i = first; i < last; i++) {
+
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
+
       buf[m++] = vertexdata[i][0];
       buf[m++] = vertexdata[i][1];
       buf[m++] = vertexdata[i][2];
@@ -4441,6 +4633,10 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
     for (i = 0; i < n; i++) {
       j = list[i];
       if (bodyown[j] < 0) continue;
+
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[j]) == abrasion_list_s.end()) continue;
+
       xcm = body[bodyown[j]].xcm;
       xgc = body[bodyown[j]].xgc;
       xcm[0] += buf[m++];
@@ -4458,6 +4654,10 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
     for (i = 0; i < n; i++) {
       j = list[i];
       if (bodyown[j] < 0) continue;
+
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[j]) == abrasion_list_s.end()) continue;
+
       k = bodyown[j];
       itensor[k][0] += buf[m++];
       itensor[k][1] += buf[m++];
@@ -4470,6 +4670,10 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
   } else if (commflag == NORMALS) {
     for (i = 0; i < n; i++) {
       j = list[i];
+      
+      // if the atom doesnt belong to a body that has been abraded we can skip
+      if(abrasion_list_s.find(bodytag[j]) == abrasion_list_s.end()) continue;
+
       vertexdata[j][0] += buf[m++];
       vertexdata[j][1] += buf[m++];
       vertexdata[j][2] += buf[m++];
