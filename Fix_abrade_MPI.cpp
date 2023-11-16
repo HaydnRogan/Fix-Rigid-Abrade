@@ -1580,7 +1580,7 @@ void FixRigidAbrade::final_integrate()
 
     int locNumFrag = abrasion_list_v.size();
 
-    MPI_Barrier(world);  // for printing
+    // MPI_Barrier(world);  // for printing
 
     std::vector<int> numfrags(nprocs);
     MPI_Allgather(&locNumFrag, 1, MPI_INT, &numfrags[0], 1, MPI_INT, world);
@@ -1589,7 +1589,7 @@ void FixRigidAbrade::final_integrate()
     for (int i=0; i<nprocs; i++) 
         _numFrag += numfrags[i];
 
-    MPI_Barrier(world); // for printing
+    // MPI_Barrier(world); // for printing
 
     std::vector<int> outVector (_numFrag);
     int displ[nprocs]; 
@@ -1603,53 +1603,49 @@ void FixRigidAbrade::final_integrate()
         }
     }
 
-    MPI_Gatherv(&abrasion_list_v[0], numfrags[me], MPI_INT, &outVector[0], &numfrags[0], &displ[0], MPI_INT, 0, world);
-    MPI_Bcast(&outVector[0],outVector.size(),MPI_INT,0,world);
-
-    abrasion_list_v = outVector;
-
-  //   std::cout << me << ": POST COMM Abrading bodies at t = " << update->ntimestep << "\t [\t";
-  // for (int i = 0; i < abrasion_list_v.size(); i++){
-  //   std::cout << abrasion_list_v[i] << "\t";
-  // } std::cout << "]\n\n";
-
-// -------------------------------
-
-  abrasion_list_s.clear();
-  
-  for (int i = 0; i < abrasion_list_v.size(); i++){
-    abrasion_list_s.insert(abrasion_list_v[i]);
-  }
-
-// recalculate properties for each body
-  if(!(abrasion_list_s.empty())){
-  
-  // std::cout<< " calling resetup_bodies static\n";
-  
-  resetup_bodies_static();
+    if (_numFrag > 0) {
     
-  // // Calculate the area and normal associated with each atom
-  // // Uses displace[i] of ghost atoms which will need to be forward communicated each time
-  // commflag = DISPLACE;
-  // comm->forward_comm(this,3);
-  
-  
-  areas_and_normals();
-  abrasion_list_s.clear();
-  abrasion_list_v.clear();
+            MPI_Gatherv(&abrasion_list_v[0], numfrags[me], MPI_INT, &outVector[0], &numfrags[0], &displ[0], MPI_INT, 0, world);
+            MPI_Bcast(&outVector[0],outVector.size(),MPI_INT,0,world);
 
-  // Cycling through the local atoms and summing their mass to the respective body
-  for (int i = 0; i < nlocal; i++){
-  
-    vertexdata[i][4] = 0.0;
-    vertexdata[i][5] = 0.0;
-    vertexdata[i][6] = 0.0;
+            abrasion_list_v = outVector;
 
+          //   std::cout << me << ": POST COMM Abrading bodies at t = " << update->ntimestep << "\t [\t";
+          // for (int i = 0; i < abrasion_list_v.size(); i++){
+          //   std::cout << abrasion_list_v[i] << "\t";
+          // } std::cout << "]\n\n";
+
+        // -------------------------------
+
+          abrasion_list_s.clear();
+          
+          for (int i = 0; i < abrasion_list_v.size(); i++){
+            abrasion_list_s.insert(abrasion_list_v[i]);
+          }
+
+        // recalculate properties for each body if any have been abradeed
+          // if(!(abrasion_list_s.empty())){
+          
+          // std::cout<< " calling resetup_bodies static\n";
+          
+          resetup_bodies_static();  
+          areas_and_normals();
+
+          abrasion_list_s.clear();
+          abrasion_list_v.clear();
+
+          // Cycling through the local atoms and summing their mass to the respective body
+          for (int i = 0; i < nlocal; i++){
+          
+            vertexdata[i][4] = 0.0;
+            vertexdata[i][5] = 0.0;
+            vertexdata[i][6] = 0.0;
+
+          }
+          
+  // }
   }
-  
-  }
-  
-  // areas_and_normals();
+
 
 
 }
@@ -3070,7 +3066,12 @@ void FixRigidAbrade::resetup_bodies_static()
   comm->forward_comm(this);
 
   // Only bodytag[i] is communicated communicated in pack/unpack_exchange() so we reassign atom2body foe local and ghost atoms
-  reset_atom2body();
+  
+  // NOTE:: reset_atom2body() isn't called here which provides a slight performance gain without changing the simulation.
+  // This may need more extensive testing incase there is a situation where the atom2body can change for ghost atoms since we last setup the body... eg body migrates processor
+
+  
+  // reset_atom2body();
 
   // compute mass & center-of-mass of each rigid body
 
