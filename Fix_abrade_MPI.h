@@ -72,10 +72,12 @@ class FixRigidAbrade : public Fix {
   double memory_usage() override;
 
   double **vertexdata;   // array to store the normals, areas, and displacement velocities of each atom (public to allow access from pairstyles)
-  std::vector<tagint> abrasion_list_v;
-  std::unordered_set<tagint> abrasion_list_s;
+  
 
 private:
+
+  std::unordered_set<tagint> abrasion_list_s; // Used to store a unique list of abraded bodies
+  std::vector<tagint> abrasion_list_v; // Used to communicate this list between processors
 
   class NeighList *list;
   void areas_and_normals();
@@ -88,7 +90,7 @@ private:
   int triclinic;
   
   // Modified Commflags
-  enum{FULL_BODY, INITIAL, XCM_IMAGE, FINAL, FORCE_TORQUE, DISPLACEMENT_VEL, VCM_ANGMOM, XCM_MASS, MASS_NATOMS, ATOM_MASS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF};
+  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM_ANGMOM, XCM_MASS, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF};
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
@@ -105,8 +107,6 @@ private:
   int hstyle, mustyle, densitystyle;
   int hvar, muvar, densityvar;
   char *hstr, *mustr, *densitystr;
-
-
 
   struct Body {
     int natoms;            // total number of atoms in body
@@ -174,6 +174,10 @@ private:
   double *mass_body;
   int nmax_mass;
 
+  // volume per body, accessed by granular pair styles
+
+  double *volume_body;
+  int nmax_volume;
   // Langevin thermostatting
 
   int langflag;                        // 0/1 = no/yes Langevin thermostat
