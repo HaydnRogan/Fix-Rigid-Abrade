@@ -4244,16 +4244,6 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
       buf[m++] = body[bodyown[j]].natoms;
     }
 
-  } else if (commflag == ATOM_MASS) {
-    for (i = 0; i < n; i++) {
-      j = list[i];
-
-      // if the atom doesnt belong to a body that has been abraded we can skip
-      if(abrasion_list_s.find(bodytag[j]) == abrasion_list_s.end()) continue;
-
-      buf[m++] = rmass[j];
-    }
-
   } else if (commflag == BODYTAG) {
     for (i = 0; i < n; i++) {
       j = list[i];
@@ -4382,15 +4372,6 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
 
       body[bodyown[i]].mass = buf[m++];
       body[bodyown[i]].natoms = buf[m++];
-    }
-
-  } else if (commflag == ATOM_MASS) {
-    for (i = first; i < last; i++) {
-
-      // if the atom doesnt belong to a body that has been abraded we can skip
-      if(abrasion_list_s.find(bodytag[i]) == abrasion_list_s.end()) continue;
-      
-      rmass[i] = buf[m++];
     }
 
   } else if (commflag == BODYTAG) {
