@@ -1020,8 +1020,6 @@ void FixRigidAbrade::post_force(int /*vflag*/)
   
   // get local index of central atom ii (i is always a local atom)
   int i = ilist[ii];
-
-  if (i > atom->nlocal)
   
   // only process abrasion for atoms in a body
   if (atom2body[i] < 0) continue;
