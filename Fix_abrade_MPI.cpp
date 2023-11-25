@@ -22,6 +22,11 @@
 #include "domain.h"
 #include "error.h"
 #include "force.h"
+
+#include "fix_wall_gran_region.h"
+#include "fix_wall_gran.h"
+#include "granular_model.h"
+
 #include "group.h"
 #include "hashlittle.h"
 #include "input.h"
@@ -34,6 +39,7 @@
 #include "neighbor.h"
 #include "neigh_list.h"
 #include "random_mars.h"
+#include "region.h"
 #include "respa.h"
 #include "rigid_const.h"
 #include "tokenizer.h"
@@ -985,6 +991,9 @@ void FixRigidAbrade::enforce2d()
 
 void FixRigidAbrade::post_force(int /*vflag*/)
 {
+
+  std::vector<Fix *> wall_list = modify->get_fix_by_style("wall/gran/region");
+
   if (langflag) apply_langevin_thermostat();
   if (earlyflag) compute_forces_and_torques();
 
@@ -1003,8 +1012,13 @@ void FixRigidAbrade::post_force(int /*vflag*/)
   double **x = atom->x;
   double **v = atom->v;
   double **f = atom->f;
+  int *mask = atom->mask;
   double v_rel[3];
 	double x_rel[3];
+  
+  double vwall[3];
+  double r_contact;
+  int nc;
 
   // variables used to navigate neighbour lists
   int inum = list->inum;
@@ -1018,44 +1032,85 @@ void FixRigidAbrade::post_force(int /*vflag*/)
   // loop over central atoms in neighbor lists 
   for (int ii = 0; ii < inum; ii ++){
   
-  // get local index of central atom ii (i is always a local atom)
-  int i = ilist[ii];
-  
-  // only process abrasion for atoms in a body
-  if (atom2body[i] < 0) continue;
-
-  // check if force is acting on atom i
-  if (MathExtra::len3(f[i])) {
-
-  // get number of neighbours for atom i
-  int jnum = numneigh[i];
-
-  // get list of local neighbor ids for atom i
-  int *jlist = firstneigh[i];
-
-  // cycle through neighbor list of i and calculate abrasion
-  for (int jj = 0; jj < jnum; jj++){
-    // get local index of neighbor to access its properties (j maybe a ghost atom)
-    int j = jlist[jj];
-
-    // check that the atoms are not in the same body - need atom2body for all ghost atoms (not just those in local angles) to be set for this to work
-    if (bodytag[i] != bodytag[j]){
+    // get local index of central atom ii (i is always a local atom)
+    int i = ilist[ii];
     
-    // Calculating the relative position of i and j in global coordinates
-    // Position and velocity of ghost atoms should already be stored for granular simulations
-    x_rel[0] = x[j][0] - x[i][0];
-    x_rel[1] = x[j][1] - x[i][1];
-    x_rel[2] = x[j][2] - x[i][2];
+    // only process abrasion for atoms in a body
+    if (atom2body[i] < 0) continue;
 
-    v_rel[0] = v[j][0] - v[i][0];
-    v_rel[1] = v[j][1] - v[i][1];
-    v_rel[2] = v[j][2] - v[i][2];
+    // check if force is acting on atom i
+    if (MathExtra::len3(f[i])) {
 
-    // Calculate the displacement on atom i from an impact by j
-    displacement_of_atom(i, j, x_rel, v_rel);
+      // ~~~~~~~~~~~~~~~~~~~~~~ Processing atom-atom abrasion ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      
+      // get number of neighbours for atom i
+      int jnum = numneigh[i];
+
+      // get list of local neighbor ids for atom i
+      int *jlist = firstneigh[i];
+
+      // cycle through neighbor list of i and calculate abrasion
+      for (int jj = 0; jj < jnum; jj++){
+        // get local index of neighbor to access its properties (j maybe a ghost atom)
+        int j = jlist[jj];
+
+        // check that the atoms are not in the same body - need atom2body for all ghost atoms (not just those in local angles) to be set for this to work
+        if (bodytag[i] != bodytag[j]){
+          
+          // Calculating the relative position of i and j in global coordinates
+          // Position and velocity of ghost atoms should already be stored for granular simulations
+          x_rel[0] = x[j][0] - x[i][0];
+          x_rel[1] = x[j][1] - x[i][1];
+          x_rel[2] = x[j][2] - x[i][2];
+
+          v_rel[0] = v[j][0] - v[i][0];
+          v_rel[1] = v[j][1] - v[i][1];
+          v_rel[2] = v[j][2] - v[i][2];
+
+          // Calculate the displacement on atom i from an impact by j
+          displacement_of_atom(i, (atom->radius)[j], x_rel, v_rel);
         }
       }
-    }
+      
+      // ~~~~~~~~~~~~~~~~~~~~~~ Processing atom-wall abrasion ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+      // Access the region and granular model for each fix_wall/gran/region
+      for (auto & fix_region : wall_list){
+        int tmp;
+        auto *region = (Region *) fix_region->extract("region", tmp);
+        auto *model = (Granular_NS::GranularModel *) fix_region->extract("model", tmp);
+
+        // determine the number of current contacts (nc)
+        if (!(mask[i] & groupbit)) continue;
+        if (! region->match(x[i][0], x[i][1], x[i][2])) continue;
+        nc = region->surface(x[i][0], x[i][1], x[i][2], (atom->radius)[i] + model->pulloff_distance((atom->radius)[i], 0.0));
+
+        // read in wall speed and radius at the contact
+        int regiondynamic = region->dynamic_check();
+        if (!regiondynamic) vwall[0] = vwall[1] = vwall[2] = 0.0;
+
+        // process current wall contacts for atom i
+        for (int ic = 0; ic < nc; ic++) {
+          
+          if (region->contact[ic].radius < 0) {r_contact = abs(1.0/region->contact[ic].radius);}
+          else {r_contact = region->contact[ic].radius;}
+
+          if (regiondynamic) region->velocity_contact(vwall, x[i], ic);
+
+            x_rel[0] = -region->contact[ic].delx;
+            x_rel[1] = -region->contact[ic].dely;
+            x_rel[2] = -region->contact[ic].delz;
+    
+            v_rel[0] = vwall[0] - v[i][0];
+            v_rel[1] = vwall[1] - v[i][1];
+            v_rel[2] = vwall[2] - v[i][2];
+
+            // Calculate the displacement on atom i from an impact by the wall
+            displacement_of_atom(i, r_contact, x_rel, v_rel);  
+        }
+    
+      }
+    } 
   }
 }
 
@@ -1262,7 +1317,7 @@ void FixRigidAbrade::areas_and_normals() {
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidAbrade::displacement_of_atom(int i, int j, double x_rel[3], double v_rel[3]) {
+void FixRigidAbrade::displacement_of_atom(int i, double impacting_radius, double x_rel[3], double v_rel[3]) {
 
   // Converting normals from body coordinates to global system so they can be compared with atom velocities
   double normals[3] = {vertexdata[i][0], vertexdata[i][1], vertexdata[i][2]};
@@ -1277,8 +1332,8 @@ void FixRigidAbrade::displacement_of_atom(int i, int j, double x_rel[3], double 
   // If the atoms are moving away from one another then no abrasion occurs
   if (!gap_is_shrinking) return;
 
-  // Calculating the effective radius of the two spheres
-  double r_eff = (atom->radius)[i] + (atom->radius)[j];
+  // Calculating the effective radius of atom i and the impacting body (atom or wall)
+  double r_eff = (atom->radius)[i] + impacting_radius;
 
   // Check that the atoms are in contact - This is necessary as otherwise atoms which are aproaching i can contribute to its abrasion even if they are on the other side of the simulation
   if (MathExtra::len3(x_rel) > r_eff) return;
@@ -1335,7 +1390,7 @@ void FixRigidAbrade::displacement_of_atom(int i, int j, double x_rel[3], double 
 
   // Per atom indetation depth
   double htp;
-  htp = (x[i][0]*global_normals[0] + x[i][1]*global_normals[1] + x[i][2]*global_normals[2]) - (x[j][0]*global_normals[0] + x[j][1]*global_normals[1] + x[j][2]*global_normals[2] - r_eff);
+  htp = (x[i][0]*global_normals[0] + x[i][1]*global_normals[1] + x[i][2]*global_normals[2]) - ((x_rel[0] + x[i][0])*global_normals[0] + (x_rel[1] + x[i][1])*global_normals[1] + (x_rel[2] + x[i][2])*global_normals[2] - r_eff);
   // Calculate the normal displacement corresponding to deltas
   double dsh;
   dsh = htp - r_eff + sqrt(((r_eff - htp)*(r_eff - htp)) + 2*sqrt(abs(2*r_eff*htp - htp*htp)) * deltas);
