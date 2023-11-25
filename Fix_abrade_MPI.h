@@ -81,7 +81,7 @@ private:
 
   class NeighList *list;
   void areas_and_normals();
-  void displacement_of_atom(int, int, double[3], double[3]);
+  void displacement_of_atom(int, double, double[3], double[3]);
 
  protected:
   int me, nprocs;
