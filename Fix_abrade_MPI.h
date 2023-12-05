@@ -174,12 +174,7 @@ private:
   double *mass_body;
   int nmax_mass;
 
-  // volume per body, accessed by granular pair styles
-
-  double *volume_body;
-  int nmax_volume;
   // Langevin thermostatting
-
   int langflag;                        // 0/1 = no/yes Langevin thermostat
   double t_start, t_stop, t_period;    // thermostat params
   double **langextra;                  // Langevin thermostat forces and torques
