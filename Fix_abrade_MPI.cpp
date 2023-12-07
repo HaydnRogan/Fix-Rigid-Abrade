@@ -1093,17 +1093,22 @@ void FixRigidAbrade::post_force(int /*vflag*/)
         if (! region->match(x[i][0], x[i][1], x[i][2])) continue;
         nc = region->surface(x[i][0], x[i][1], x[i][2], (atom->radius)[i] + model->pulloff_distance((atom->radius)[i], 0.0));
 
-        // read in wall speed and radius at the contact
+        // Checking if the region is moving
         int regiondynamic = region->dynamic_check();
-        if (regiondynamic) region->velocity_contact(vwall, x[i], ic);
-        else vwall[0] = vwall[1] = vwall[2] = 0.0;
-
-        if (region->contact[ic].radius < 0) {r_contact = abs(1.0/region->contact[ic].radius);}
-        else {r_contact = region->contact[ic].radius;}
 
         // process current wall contacts for atom i
         for (int ic = 0; ic < nc; ic++) {
           
+            // Setting wall velocity
+            if (regiondynamic) region->velocity_contact(vwall, x[i], ic);
+            else vwall[0] = vwall[1] = vwall[2] = 0.0;
+
+            // Setting wall radius at the contact
+            // TODO: Determine best way to get the radius of contact for the concave case (negative curvature)
+            if (region->contact[ic].radius < 0) {r_contact = abs(1.0/region->contact[ic].radius);}
+            else {r_contact = region->contact[ic].radius;}
+
+            
             x_rel[0] = -region->contact[ic].delx;
             x_rel[1] = -region->contact[ic].dely;
             x_rel[2] = -region->contact[ic].delz;
