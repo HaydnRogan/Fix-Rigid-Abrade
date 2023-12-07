@@ -94,6 +94,7 @@ private:
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
+  int dynamic_flag;    // 0 if body is held sationary and prevents the COM from being integrated
   int earlyflag;       // 1 if forces/torques are computed at post_force()
   int commflag;        // various modes of forward/reverse comm
   int customflag;      // 1 if custom property/variable define bodies
