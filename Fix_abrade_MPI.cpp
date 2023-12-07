@@ -82,6 +82,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   dof_flag = 1;
   enforce2d_flag = 1;
   stores_ids = 1;
+  dynamic_flag = 1;
   centroidstressflag = CENTROID_AVAIL;
 
   restart_peratom = 1; //~ Per-atom information is saved to the restart file
@@ -415,7 +416,11 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
       id_gravity = utils::strdup(arg[iarg+1]);
       iarg += 2;
 
-    } else error->all(FLERR,"Illegal fix rigid/abrade command");
+    } else if (strcmp(arg[iarg],"stationary") == 0) {
+      if (iarg+1 > narg) error->all(FLERR,"Illegal fix rigid/abrade command");
+      dynamic_flag = 0;
+      iarg += 1;
+    }else error->all(FLERR,"Illegal fix rigid/abrade command");
   }
 
   // error check and further setup for Molecule template
@@ -845,9 +850,9 @@ void FixRigidAbrade::initial_integrate(int vflag)
     // update vcm by 1/2 step
 
     dtfm = dtf / b->mass;
-    b->vcm[0] += dtfm * b->fcm[0];
-    b->vcm[1] += dtfm * b->fcm[1];
-    b->vcm[2] += dtfm * b->fcm[2];
+    b->vcm[0] += dtfm * b->fcm[0] * dynamic_flag;
+    b->vcm[1] += dtfm * b->fcm[1] * dynamic_flag;
+    b->vcm[2] += dtfm * b->fcm[2] * dynamic_flag;
 
     // update xcm by full step
 
@@ -857,9 +862,9 @@ void FixRigidAbrade::initial_integrate(int vflag)
 
     // update angular momentum by 1/2 step
 
-    b->angmom[0] += dtf * b->torque[0];
-    b->angmom[1] += dtf * b->torque[1];
-    b->angmom[2] += dtf * b->torque[2];
+    b->angmom[0] += dtf * b->torque[0] * dynamic_flag;
+    b->angmom[1] += dtf * b->torque[1] * dynamic_flag;
+    b->angmom[2] += dtf * b->torque[2] * dynamic_flag;
 
     // compute omega at 1/2 step from angmom at 1/2 step and current q
     // update quaternion a full step via Richardson iteration
@@ -994,6 +999,7 @@ void FixRigidAbrade::post_force(int /*vflag*/)
 {
 
   std::vector<Fix *> wall_list = modify->get_fix_by_style("wall/gran/region");
+  // TODO: Check if/when this breaks using other wall styles and add in errors
 
   if (langflag) apply_langevin_thermostat();
   if (earlyflag) compute_forces_and_torques();
@@ -1150,9 +1156,6 @@ void FixRigidAbrade::areas_and_normals() {
     vertexdata[i][1] = 0.0; // y normal
     vertexdata[i][2] = 0.0; // z normal
     vertexdata[i][3] = 0.0; // associated area
-    // vertexdata[i][4] = 0.0; // x displacement velocity
-    // vertexdata[i][5] = 0.0; // y displacement velocity
-    // vertexdata[i][6] = 0.0; // z displacement velocity
   }
 
   norm1 = 0.0;
@@ -1288,12 +1291,12 @@ void FixRigidAbrade::areas_and_normals() {
   }
 
   // reverse communicate contribution to normals of ghost atoms
-  // I beleive this is required when a particle stradles a domain boundary
+  // This is required for particles that straddle domain boundaries
   commflag = NORMALS;
   comm->reverse_comm(this,4);
 
 
-  // normalise the length of all normal vectors
+  // normalise the length of all atom normals
   for (int i = 0; i < nlocal; i++) {
 
     // if the atom doesnt belong to a body that has been abraded we can skip
@@ -1530,15 +1533,15 @@ void FixRigidAbrade::final_integrate()
     // update vcm by 1/2 step
 
     dtfm = dtf / b->mass;
-    b->vcm[0] += dtfm * b->fcm[0];
-    b->vcm[1] += dtfm * b->fcm[1];
-    b->vcm[2] += dtfm * b->fcm[2];
+    b->vcm[0] += dtfm * b->fcm[0] * dynamic_flag;
+    b->vcm[1] += dtfm * b->fcm[1] * dynamic_flag;
+    b->vcm[2] += dtfm * b->fcm[2] * dynamic_flag;
 
     // update angular momentum by 1/2 step
 
-    b->angmom[0] += dtf * b->torque[0];
-    b->angmom[1] += dtf * b->torque[1];
-    b->angmom[2] += dtf * b->torque[2];
+    b->angmom[0] += dtf * b->torque[0] * dynamic_flag;
+    b->angmom[1] += dtf * b->torque[1] * dynamic_flag;
+    b->angmom[2] += dtf * b->torque[2] * dynamic_flag;
 
     MathExtra::angmom_to_omega(b->angmom,b->ex_space,b->ey_space,
                                b->ez_space,b->inertia,b->omega);
@@ -1619,7 +1622,6 @@ void FixRigidAbrade::final_integrate()
     }
   }
 
-
   // Each processor needs a global list of bodies that have been abraded.
   // To communicate these we we first move them from the unorded set into a vector
   
@@ -1670,7 +1672,8 @@ void FixRigidAbrade::final_integrate()
     }
 
     // recalculate properties and normals for each abraded body 
-    resetup_bodies_static();  
+    // TODO: Check if not updating the rigid body properties affects the abrasion for a stationary particle
+    if (dynamic_flag) resetup_bodies_static(); 
     areas_and_normals();
 
     // clear the lists for use in the following timestep
@@ -2732,6 +2735,7 @@ void FixRigidAbrade::setup_bodies_static()
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
 
+      // literature reference
       inertia = itensor[atom2body[anglelist[n][0]]];
       inertia[0] += (((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) *(unwrap[i1][0]*(unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*(((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])));
       inertia[1] += (((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][2]-unwrap[i1][2])) - ((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][2]-unwrap[i1][2]))) *(unwrap[i1][1]*(unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*(((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])));
@@ -3866,7 +3870,7 @@ void FixRigidAbrade::grow_arrays(int nmax)
   array_atom = vertexdata;
 
   memory->grow(xcmimage,nmax,"rigid/abrade:xcmimage");
-  memory->grow(displace,nmax,3,"rigid/abrade:displace");
+  memory->grow(displace,nmax,3,"rigid/abrade:displace"); // NOTE: Remove these
   memory->grow(unwrap,nmax,3,"rigid/abrade:unwrap");
   if (extended) {
     memory->grow(eflags,nmax,"rigid/abrade:eflags");
