@@ -20,8 +20,6 @@ FixStyle(rigid/abrade,FixRigidAbrade);
 #ifndef LMP_FIX_RIGID_ABRADE_H
 #define LMP_FIX_RIGID_ABRADE_H
 
-#include <vector>
-#include <unordered_set>
 #include "fix.h"
 
 namespace LAMMPS_NS {
@@ -76,9 +74,6 @@ class FixRigidAbrade : public Fix {
 
 private:
 
-  std::unordered_set<tagint> abrasion_list_s; // Used to store a unique list of abraded bodies
-  std::vector<tagint> abrasion_list_v; // Used to communicate this list between processors
-
   class NeighList *list;
   void areas_and_normals();
   void displacement_of_atom(int, double, double[3], double[3]);
@@ -90,7 +85,7 @@ private:
   int triclinic;
   
   // Modified Commflags
-  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM_ANGMOM, XCM_MASS, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF};
+  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM_ANGMOM, XCM_MASS, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG};
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
@@ -130,6 +125,7 @@ private:
     double omega[3];       // space-frame omega of body
     double conjqm[4];      // conjugate quaternion momentum
     int remapflag[4];      // PBC remap flags
+    bool abraded_flag;     // flag which marks that the body has abraded and changed shape
     imageint image;        // image flags of xcm
     imageint dummy;        // dummy entry for better alignment
   };
