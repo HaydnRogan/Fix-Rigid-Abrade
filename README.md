@@ -19,3 +19,4 @@ To run the input script:
 - Place in.test and sphere.mol in project_directory
 - Open project_directory in terminal
 - mpirun --oversubscribe -np N lmp_mpi -in in.test 
+The simulation will take ~ 5 minutes to run 
