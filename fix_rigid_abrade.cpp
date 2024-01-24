@@ -47,10 +47,13 @@
 #include "variable.h"
 
 #include <cmath>
+#include <string> // for string class 
 #include <cstring>
 #include <map>
 #include <utility>
 #include <iostream>
+#include <stdio.h>
+#include <stdlib.h>
 
 using namespace LAMMPS_NS;
 using namespace FixConst;
@@ -707,6 +710,7 @@ void FixRigidAbrade::init_list(int /*id*/, NeighList *ptr)
 void FixRigidAbrade::setup_pre_neighbor()
 {
   if (reinitflag || !setupflag){
+    std::cout << me << ": Calling setup_bodies_static() at t = " << update->ntimestep << std::endl;
     neighbor->build_topology();
     setup_bodies_static();
     areas_and_normals();
@@ -1128,6 +1132,10 @@ void FixRigidAbrade::post_force(int /*vflag*/)
 
 void FixRigidAbrade::areas_and_normals() {
 
+  // forward communicate displace[i] to ghost atoms since areas and normals are calculated in body coordinates
+  commflag = DISPLACE;
+  comm->forward_comm(this,3);
+
   int i1, i2, i3, n, type;
   double delx1, dely1, delz1, delx2, dely2, delz2;
   double eangle, f1[3], f3[3];
@@ -1218,10 +1226,11 @@ void FixRigidAbrade::areas_and_normals() {
     // since we are using body coordinates, [0,0,0] is the COM of the respective body
     
     if  ((((centroid[0] - 0) * n1) + ((centroid[1] - 0) * n2) + ((centroid[2] - 0) * n3)) < 0) {
-      // Flip the normal if it is pointing toward the interior of the body
+      // Flip the normal if it is pointing the wrong way
       n1 = -n1;
       n2 = -n2;
       n3 = -n3;
+      // std::cout << me << ": atom normal flipped" << std::endl;
     }
 
     // Sub-edge 1
@@ -1580,6 +1589,7 @@ void FixRigidAbrade::final_integrate()
     // Flagging that the body owning atom i has been abraded and has changed shape
     Body *b = &body[atom2body[i]];
     b->abraded_flag = 1;
+    proc_abraded_flag = 1;
 
     // Convert displacement velocities from global coordinates to body coordinates 
     MathExtra::transpose_matvec(b->ex_space,b->ey_space,b->ez_space, global_displace_vel, body_displace_vel);
@@ -1624,16 +1634,22 @@ void FixRigidAbrade::final_integrate()
     // Both reverse and forward communication is required to consistently set the abraded_flag for both owned and ghost bodies across all processors
     // This is due top the fact that either an owned or ghost atom can belong to either a owned or ghost body
 
-    commflag = ABRADED_FLAG;
+    commflag = PROC_ABRADED_FLAG;
     comm->reverse_comm(this,1);
-    commflag = ABRADED_FLAG;
+    commflag = PROC_ABRADED_FLAG;
     comm->forward_comm(this,1);
 
 
-    // recalculate properties and normals for each abraded body 
-    // TODO: Check if not updating the rigid body properties affects the abrasion for a stationary particle
-    if (dynamic_flag) resetup_bodies_static(); 
-    areas_and_normals();
+    if (proc_abraded_flag){
+        commflag = ABRADED_FLAG;
+        comm->reverse_comm(this,1);
+        commflag = ABRADED_FLAG;
+        comm->forward_comm(this,1);
+        // recalculate properties and normals for each abraded body 
+        // TODO: Check if not updating the rigid body properties affects the abrasion for a stationary particle
+        if (dynamic_flag) resetup_bodies_static(); 
+        areas_and_normals();
+    }
 
     // Setting the displacement velocities of all atoms back to 0
     // This may need moving if we don't call this loop every time a body is abraded... since these will need resetting very time.
@@ -1645,6 +1661,7 @@ void FixRigidAbrade::final_integrate()
         
     // setting all abraded_flags for owned and ghost bodies back to 0 in preparation for the following timestep
     for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody ++) body[ibody].abraded_flag = 0;
+    proc_abraded_flag = 0;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -2407,6 +2424,7 @@ int FixRigidAbrade::rendezvous_body(int n, char *inbuf,
 
 void FixRigidAbrade::setup_bodies_static()
 {
+  std::cout << "*****************------------------ LOCAL: Setting up bodies static -------------------*****************" << std::endl;
   int i,ibody;
 
   // extended = 1 if any particle in a rigid body is finite size
@@ -2538,6 +2556,7 @@ void FixRigidAbrade::setup_bodies_static()
     // Initally setting all bodies to have been abraded at t = 0 so that they are correctly processed during setup_bodies_static
     body[ibody].abraded_flag = 1;
   }
+    proc_abraded_flag = 1;
 
   double massone;
 
@@ -2596,7 +2615,7 @@ void FixRigidAbrade::setup_bodies_static()
   std::cout << " ---------------------- " << nlocal_body << " bodies owned by proc " << me << " ---------------------- "  << std::endl;
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     // if ((std::ceil(body[ibody].volume * 10.0) / 10.0) != (std::ceil(body[(ibody+1)%nlocal_body].volume * 10.0) / 10.0)) {
-      std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << " mass: " << body[ibody].mass << " natoms: " << body[ibody].natoms <<  std::endl;
+    //   std::cout << me << ": MID Body " << ibody << " volume: " << body[ibody].volume << " mass: " << body[ibody].mass << " natoms: " << body[ibody].natoms <<  std::endl;
     // }
   }
   // -----------------------------------------------------------------------------------------------------------------
@@ -2617,6 +2636,13 @@ void FixRigidAbrade::setup_bodies_static()
 
     // Setting the mass of each body
     body[ibody].mass = body[ibody].volume * density;
+
+    // Positioning the owning atom at the COM
+    x[body[ibody].ilocal][0] = xcm[0];
+    x[body[ibody].ilocal][1] = xcm[1];
+    x[body[ibody].ilocal][2] = xcm[2];
+    atom->radius[body[ibody].ilocal]/= 5;
+
   }
 
   // Forward communicate body mass and natoms to ghost bodies so the mass of their atoms can be set
@@ -2974,7 +3000,7 @@ void FixRigidAbrade::setup_bodies_static()
   commflag = ITENSOR;
   comm->reverse_comm(this,6);
 
-  if (nlocal_body > 0)std::cout << me << ": Body " << 0 << " inertia: (" << body[0].inertia[0] << ", "  << body[0].inertia[1] << ", "  << body[0].inertia[2] << ") Volume: " <<  body[0].volume << " Mass: " <<  body[0].mass <<" Density: "<< body[0].density << std::endl;
+  if (nlocal_body > 0)std::cout << me << ": Body " << 0 << " inertia: (" << body[0].inertia[0] << ", "  << body[0].inertia[1] << ", "  << body[0].inertia[2] << ") Volume: " <<  body[0].volume << " Mass: " <<  body[0].mass <<" Density: "<< body[0].density << " COM: (" << body[0].xcm[0] << ", " << body[0].xcm[1] << ", " << body[0].xcm[2] << ") " << std::endl;
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     // std::cout << me << ": testing body " << ibody << std::endl;
     if (
@@ -2985,7 +3011,7 @@ void FixRigidAbrade::setup_bodies_static()
     
 }
 
-  // error check that re-computed moments of inertia match diagonalized ones
+  if (dynamic_flag){// error check that re-computed moments of inertia match diagonalized ones
   // do not do test for bodies with params read from inpfile
 
   double norm;
@@ -3019,7 +3045,7 @@ void FixRigidAbrade::setup_bodies_static()
         fabs(itensor[ibody][4]/norm) > TOLERANCE ||
         fabs(itensor[ibody][5]/norm) > TOLERANCE)
       error->all(FLERR,"Fix rigid: Bad principal moments");
-  }
+  }}
 
   // clean up
 
@@ -3158,10 +3184,18 @@ void FixRigidAbrade::resetup_bodies_static()
     
     // Setting the mass of each body
     body[ibody].mass = body[ibody].volume * density;
+
+    // Positioning the owning atom at the COM
+    x[body[ibody].ilocal][0] = xcm[0];
+    x[body[ibody].ilocal][1] = xcm[1];
+    x[body[ibody].ilocal][2] = xcm[2];
+
+
   }
 
   // remap the xcm of each body back into simulation box
   //   and reset body and atom xcmimage flags via pre_neighbor()
+
 
   pre_neighbor();
 
@@ -4266,6 +4300,10 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
 
     }
 
+  } else if (commflag == PROC_ABRADED_FLAG) {
+
+      buf[m++] = proc_abraded_flag;
+
   } else if (commflag == BODYTAG) {
     for (i = 0; i < n; i++) {
       j = list[i];
@@ -4404,6 +4442,10 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
 
     }
 
+  } else if (commflag == PROC_ABRADED_FLAG) {
+
+    proc_abraded_flag = buf[m++];
+    
   } else if (commflag == BODYTAG) {
     for (i = first; i < last; i++) {
       bodytag[i] = buf[m++];
@@ -4490,6 +4532,10 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
       if (bodyown[i] < 0) continue;
       buf[m++] = body[bodyown[i]].abraded_flag;
     }
+  } else if (commflag == PROC_ABRADED_FLAG) {
+    
+      buf[m++] = proc_abraded_flag;
+    
   } else if (commflag == ITENSOR) {
     for (i = first; i < last; i++) {
       if (bodyown[i] < 0) continue;
@@ -4597,7 +4643,11 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
       if (bodyown[j] < 0) continue;
       body[bodyown[j]].abraded_flag += buf[m++];
     }
-  } else if (commflag == ITENSOR) {
+  } else if (commflag == PROC_ABRADED_FLAG) {
+
+      proc_abraded_flag += buf[m++];
+ 
+  }else if (commflag == ITENSOR) {
     for (i = 0; i < n; i++) {
       j = list[i];
 
@@ -4658,7 +4708,8 @@ void FixRigidAbrade::grow_body()
 ------------------------------------------------------------------------- */
 
 void FixRigidAbrade::reset_atom2body()
-{
+{ 
+
   int iowner;
 
   // forward communicate bodytag[i] for ghost atoms
@@ -4673,14 +4724,17 @@ void FixRigidAbrade::reset_atom2body()
     atom2body[i] = -1;
     if (bodytag[i]) {
       iowner = atom->map(bodytag[i]);
-      if (iowner == -1)
-        error->one(FLERR,"Rigid body atoms {} {} missing on "
+      if (iowner == -1) error->one(FLERR,"Rigid body atoms {} {} missing on "
                                      "proc {} at step {}",atom->tag[i],
                                      bodytag[i],comm->me,update->ntimestep);
+      
 
       atom2body[i] = bodyown[iowner];
     }
   }
+
+
+
 }
 
 /* ---------------------------------------------------------------------- */
