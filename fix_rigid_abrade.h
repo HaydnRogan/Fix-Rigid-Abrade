@@ -77,15 +77,18 @@ private:
   class NeighList *list;
   void areas_and_normals();
   void displacement_of_atom(int, double, double[3], double[3]);
+  char *owning_atoms;      // group containing all atoms which own rigid bodies
+
 
  protected:
   int me, nprocs;
   double dtv, dtf, dtq;
   double *step_respa;
   int triclinic;
-  
+  bool proc_abraded_flag; // A flag which marks if any owned or ghost atoms on a processor have been abraded
+
   // Modified Commflags
-  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM_ANGMOM, XCM_MASS, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG};
+  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM_ANGMOM, XCM_MASS, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG, PROC_ABRADED_FLAG, OWNING_ATOMS};
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
