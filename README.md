@@ -15,6 +15,7 @@ in terminal at src:
 - mv lmp_mpi project_directory/lmp_mpi
 
 To run the input script:
-- in.test and sphere.mol in a project directory
-- open directory in terminal
+
+- Place in.test and sphere.mol in project_directory
+- Open project_directory in terminal
 - mpirun --oversubscribe -np N lmp_mpi -in in.test 
