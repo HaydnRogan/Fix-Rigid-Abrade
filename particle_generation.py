@@ -15,9 +15,9 @@ STL_file_name = "sphere.stl"
 
 single = False
 l = 1 # Length of cube side [arbritary units]
-n = 7 # Number of nodes per side
+n = 8 # Number of nodes per side
 particle_name = "B-anm-00001"
-N_max = 25
+N_max = 0
 sphere = False
 r_0 = 1
 scale = 1
@@ -351,5 +351,5 @@ if create_STL:
     print("Generating STL... \n")
     # Write the mesh to file "cube.stl"
     cube.save(STL_file_name)
-
+    print(f"{len(xyz)} atoms")
 print("Finished.")
