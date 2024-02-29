@@ -22,6 +22,7 @@ FixStyle(rigid/abrade,FixRigidAbrade);
 
 #include "fix.h"
 #include <map>
+#include <vector>
 
 namespace LAMMPS_NS {
 
@@ -83,9 +84,17 @@ private:
   int *dlist;
   int allflag, compress_flag, bond_flag, mol_flag;
   std::map<tagint, int> *hash;
+  std::vector<std::vector<tagint>> *new_angles_list;
+  std::vector<std::vector<int>> *new_angles_index;
+  std::vector<tagint> *boundary;
+
+  int *atype;
+
   static void bondring(int, char *, void *);
   
   char *owning_atoms;      // group containing all atoms which own rigid bodies
+  bool angle_check(int, int, std::vector<std::vector<double>>, std::vector<std::vector<double>>, double[3]);
+
 
 
  protected:
