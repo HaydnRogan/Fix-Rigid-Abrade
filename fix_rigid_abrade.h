@@ -21,6 +21,8 @@ FixStyle(rigid/abrade,FixRigidAbrade);
 #define LMP_FIX_RIGID_ABRADE_H
 
 #include "fix.h"
+#include <map>
+#include <vector>
 
 namespace LAMMPS_NS {
 
@@ -69,7 +71,7 @@ class FixRigidAbrade : public Fix {
   double compute_scalar() override;
   double memory_usage() override;
 
-  double **vertexdata;   // array to store the normals, areas, and displacement velocities of each atom (public to allow access from pairstyles)
+  double **vertexdata;   // array to store the normals, areas, and displacement velocities of each atom, and the radius required to form a closed surface (public to allow access from pairstyles)
   
 
 private:
@@ -77,7 +79,22 @@ private:
   class NeighList *list;
   void areas_and_normals();
   void displacement_of_atom(int, double, double[3], double[3]);
+
+  void remesh(int);
+  int *dlist;
+  int allflag, compress_flag, bond_flag, mol_flag;
+  std::map<tagint, int> *hash;
+  std::vector<std::vector<tagint>> *new_angles_list;
+  std::vector<std::vector<int>> *new_angles_index;
+  std::vector<tagint> *boundary;
+
+  int *atype;
+
+  static void bondring(int, char *, void *);
+  
   char *owning_atoms;      // group containing all atoms which own rigid bodies
+  bool angle_check(int, int, std::vector<std::vector<double>>, std::vector<std::vector<double>>, double[3]);
+
 
 
  protected:
@@ -204,6 +221,9 @@ private:
 
   class Molecule **onemols;
   int nmol;
+
+  // Atoms deleted to preserve the meshes' integrity
+  class DeleteAtoms *delete_atoms;
 
   // class data used by ring communication callbacks
 
