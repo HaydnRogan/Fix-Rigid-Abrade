@@ -1304,21 +1304,21 @@ void FixRigidAbrade::areas_and_normals() {
 
 
 
-    if (MathExtra::len3(i1_centroid) < (atom->radius[i1]*threshold)){
-      std::cout << atom->tag[i1] << ": distance to centroid: " << MathExtra::len3(i1_centroid) << "radius " << atom->radius[i1]*threshold << std::endl;
-      remesh(atom->tag[i1]);
-      remesh_breakout = true;
-    }
-    if (MathExtra::len3(i2_centroid) < (atom->radius[i2]*threshold)){
-      std::cout << atom->tag[i2] << ": distance to centroid: " << MathExtra::len3(i2_centroid) << "radius " << atom->radius[i2]*threshold << std::endl;
-      remesh(atom->tag[i2]);
-      remesh_breakout = true;
-    }
-    if (MathExtra::len3(i3_centroid) < (atom->radius[i3]*threshold)){
-      std::cout << atom->tag[i3] << ": distance to centroid: " << MathExtra::len3(i3_centroid) << "radius " << atom->radius[i3]*threshold << std::endl;
-      remesh(atom->tag[i3]);
-      remesh_breakout = true;
-    }
+    // if (MathExtra::len3(i1_centroid) < (atom->radius[i1]*threshold)){
+    //   std::cout << atom->tag[i1] << ": distance to centroid: " << MathExtra::len3(i1_centroid) << "radius " << atom->radius[i1]*threshold << std::endl;
+    //   remesh(atom->tag[i1]);
+    //   remesh_breakout = true;
+    // }
+    // if (MathExtra::len3(i2_centroid) < (atom->radius[i2]*threshold)){
+    //   std::cout << atom->tag[i2] << ": distance to centroid: " << MathExtra::len3(i2_centroid) << "radius " << atom->radius[i2]*threshold << std::endl;
+    //   remesh(atom->tag[i2]);
+    //   remesh_breakout = true;
+    // }
+    // if (MathExtra::len3(i3_centroid) < (atom->radius[i3]*threshold)){
+    //   std::cout << atom->tag[i3] << ": distance to centroid: " << MathExtra::len3(i3_centroid) << "radius " << atom->radius[i3]*threshold << std::endl;
+    //   remesh(atom->tag[i3]);
+    //   remesh_breakout = true;
+    // }
 
     // if (MathExtra::len3(i1_centroid) > (atom->radius[i1]*threshold)){
     //   //  if (atom->tag[i1] == 542) std::cout << atom->tag[i1] << ": distance to centroid: " << MathExtra::len3(i1_centroid) << "  radius " << atom->radius[i1]*threshold << std::endl;
@@ -1455,7 +1455,7 @@ void FixRigidAbrade::areas_and_normals() {
     // Only processing properties relevant to bodies which have abraded and changed shape
     if (!body[atom2body[i]].abraded_flag) continue;
 
-    if (vertexdata[i][3] > 0) {
+    // if (vertexdata[i][3] > 0) {
 
     // //  if (master_reprocess) continue;
     //  double displacement_vel[3];
@@ -1486,20 +1486,65 @@ void FixRigidAbrade::areas_and_normals() {
       bodynormals[1] = norm2/length;
       bodynormals[2] = norm3/length; 
       
+      // if ((MathExtra::len3(bodynormals) < 0.1) && bodytag[i] != atom->tag[i]){
+      //   remesh(atom->tag[i]);
+      //   return;
+      // }
+
       MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,bodynormals,globalnormals);
 
       vertexdata[i][0] = globalnormals[0];
       vertexdata[i][1] = globalnormals[1];
       vertexdata[i][2] = globalnormals[2];
       
-    } else {
-      vertexdata[i][0] = 0.0;
-      vertexdata[i][1] = 0.0;
-      vertexdata[i][2] = 0.0;
-    }
+    // } else {
+    //   vertexdata[i][0] = 0.0;
+    //   vertexdata[i][1] = 0.0;
+    //   vertexdata[i][2] = 0.0;
+    // }
+
+
+
+
   }
   
 // std::cout << update->ntimestep << " finished areas_and_normals " << std::endl;  
+
+
+// Calculating no.atoms/surface area
+  // double surface_density_threshold = 6.73483;
+  double surface_density_threshold = 5.11542;
+  // double surface_density_threshold = 9.09316;
+  double surface_density = 0.0;
+  double atom_count = 0.0;
+  double smallest_area = 10000.0;
+  int smallest_area_index = 0;
+  double area_of_atom = 0.0;
+
+  // normalise the length of all atom normals
+  for (int i = 0; i < nlocal; i++) {
+    
+    // Only processing properties relevant to bodies which have abraded and changed shape
+    if (!body[atom2body[i]].abraded_flag) continue;
+    atom_count += 1.0;
+    area_of_atom = (vertexdata[i][3]);
+    area_of_atom = fabs(area_of_atom);
+    surface_density += area_of_atom;
+    // std::cout << " atom " << atom->tag[i] << "area " << area_of_atom << "||" << smallest_area << std::endl;
+    if (area_of_atom < smallest_area) {
+      if (bodytag[i] != atom->tag[i]) {
+      smallest_area_index = i;
+      smallest_area = area_of_atom;}
+    }
+  }
+
+  // std::cout << " " << surface_density << "/" << atom_count << std::endl;
+  surface_density = atom_count/surface_density;
+
+  if (surface_density > surface_density_threshold){ 
+      std::cout << "surface density " << surface_density << " || " << surface_density_threshold << std::endl;
+    remesh(atom->tag[smallest_area_index]);}
+
 }
 
 
