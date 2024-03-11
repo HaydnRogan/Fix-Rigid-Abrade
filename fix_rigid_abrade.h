@@ -71,7 +71,7 @@ class FixRigidAbrade : public Fix {
   double compute_scalar() override;
   double memory_usage() override;
 
-  double **vertexdata;   // array to store the normals, areas, and displacement velocities of each atom, and the radius required to form a closed surface (public to allow access from pairstyles)
+  double **vertexdata;   // array to store the normals, areas, and displacement velocities of each atom (public to allow access from pairstyles)
   
 
 private:
@@ -79,22 +79,20 @@ private:
   class NeighList *list;
   void areas_and_normals();
   void displacement_of_atom(int, double, double[3], double[3]);
-
-  void remesh(int);
+  char *owning_atoms;      // group containing all atoms which own rigid bodies
+  
   int *dlist;
   int allflag, compress_flag, bond_flag, mol_flag;
+  int setup_surface_density_threshold_flag;
+  int *atype;
+  
   std::map<tagint, int> *hash;
   std::vector<std::vector<tagint>> *new_angles_list;
-  std::vector<std::vector<int>> *new_angles_index;
   std::vector<tagint> *boundary;
-
-  int *atype;
-
-  static void bondring(int, char *, void *);
   
-  char *owning_atoms;      // group containing all atoms which own rigid bodies
   bool angle_check(int, int, std::vector<std::vector<double>>, std::vector<std::vector<double>>, double[3]);
-
+  void remesh(int);
+  static void bondring(int, char *, void *);
 
 
  protected:
@@ -109,7 +107,8 @@ private:
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
-  int dynamic_flag;    // 0 if body is held sationary and prevents the COM from being integrated
+  int dynamic_flag;    // 0 if bodies are held sationary and prevents the COM from being integrated
+  int remesh_flag;    //  1 if bodies are to be remeshed following a change in shape
   int earlyflag;       // 1 if forces/torques are computed at post_force()
   int commflag;        // various modes of forward/reverse comm
   int customflag;      // 1 if custom property/variable define bodies
@@ -129,6 +128,12 @@ private:
     int ilocal;            // index of owning atom
     double mass;           // total mass of body
     double volume;         // total mass of body
+
+    double surface_area; // total surface area of the body
+    double surface_density_threshold; // natoms/surface_area density calculated at setup to act as a condition for remeshing
+    double min_area_atom; // the smallest area associated with an atom within the body
+    tagint min_area_atom_tag; // tag of the atom in the body which has the smallest associated area
+
     double density;        // mass density of the body
     double xcm[3];         // COM position
     double xgc[3];         // geometric center position - should equal xcm for the assumed homogenous mass density
@@ -221,9 +226,6 @@ private:
 
   class Molecule **onemols;
   int nmol;
-
-  // Atoms deleted to preserve the meshes' integrity
-  class DeleteAtoms *delete_atoms;
 
   // class data used by ring communication callbacks
 
