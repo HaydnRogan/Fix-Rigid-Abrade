@@ -1114,8 +1114,8 @@ void FixRigidAbrade::post_force(int /*vflag*/)
             else vwall[0] = vwall[1] = vwall[2] = 0.0;
 
             // Setting wall radius at the contact
-            // TODO: Determine best way to get the radius of contact for the concave case (negative curvature)
-            if (region->contact[ic].radius < 0) {r_contact = abs(1.0/region->contact[ic].radius);}
+            // If the curvature is negative we treat it as a flat wall
+            if (region->contact[ic].radius < 0) {r_contact = 0.0;}
             else {r_contact = region->contact[ic].radius;}
 
             
@@ -1239,7 +1239,7 @@ void FixRigidAbrade::areas_and_normals() {
       // if we are remeshing, we removed an atom (which has been abraded on this timestep) in the flipped angle
       if (remesh_flag) {
     
-        std::cout << me << ": angle (" << atom->tag[i1] << ", " << atom->tag[i2] << ", " << atom->tag[i3] << ") normal pointing inwards.";
+        std::cout << me << ": angle (" << atom->tag[i1] << ", " << atom->tag[i2] << ", " << atom->tag[i3] << ") normal pointing inwards." << std::endl;
         
         if(i1 < nlocal) {
           displacement[0] = vertexdata[i1][4];
@@ -1411,7 +1411,7 @@ void FixRigidAbrade::areas_and_normals() {
       if (setup_surface_density_threshold_flag) {
         
         std::cout << "Body: " << ibody << " natoms: " << (body[ibody].natoms-1) << " S_A: " << body[ibody].surface_area << std::endl;
-        body[ibody].surface_density_threshold = (body[ibody].natoms-1)/body[ibody].surface_area; }
+        body[ibody].surface_density_threshold = ((body[ibody].natoms-1)/body[ibody].surface_area)*1.0125; }
         
       
       // If the surface atom density has increased beyond the inital threshold we remesh the body atom with the minimum associated area (at the region of highest density)
@@ -1977,7 +1977,14 @@ for (int permutation = 0; permutation < boundary_coords.size(); permutation ++){
 
 // Printing out the valid meshes
 if (valid_meshes.size() == 0){
-  error->all(FLERR,"Failed to remesh with alternate scheme.");
+
+  std::cout << " Atom: " << remove_tag << " Boundary: " << std::endl;
+
+for (int q = 0; q < (*boundary).size(); q++){
+  std::cout << (*boundary)[q] << " ";
+  } std::cout << std::endl;
+
+  error->all(FLERR,"Failed to remesh.");
 }
         
 
@@ -2043,14 +2050,7 @@ std::vector<std::vector<int>> best_choice_angles = valid_meshes[best_choice];
       for (int j = 0; j < (best_choice_angles)[i].size(); j++){
       }
         new_angles_list.push_back({(*boundary)[(best_choice_angles)[i][0]], (*boundary)[(best_choice_angles)[i][1]], (*boundary)[(best_choice_angles)[i][2]]});
-    }
-  
-  if (!valid_permutation) error->all(FLERR,"Failed to remesh.");
-
-    
-    
-    
-    
+    }  
     
     // Creating the angles -> Modified from create_bonds.cpp
 
