@@ -58,9 +58,8 @@ class FixRigidAbrade : public Fix {
 
   void setup_pre_neighbor() override;
   void pre_neighbor() override;
-  int dof(int) override;
+  bigint dof(int) override;
   void deform(int) override;
-  void enforce2d() override;
   void reset_dt() override;
   void zero_momentum() override;
   void zero_rotation() override;
@@ -89,7 +88,7 @@ private:
   std::map<tagint, int> *hash;
   std::vector<std::vector<tagint>> *new_angles_list;
   std::vector<tagint> *boundary;
-  
+
   bool angle_check(int, int, std::vector<std::vector<double>>, std::vector<std::vector<double>>, double[3]);
   void remesh(int);
   static void bondring(int, char *, void *);
@@ -253,6 +252,7 @@ private:
   void setup_bodies_dynamic();
   void apply_langevin_thermostat();
   void compute_forces_and_torques();
+  void enforce2d();
   void readfile(int, double **, int *);
   void grow_body();
   void reset_atom2body();
