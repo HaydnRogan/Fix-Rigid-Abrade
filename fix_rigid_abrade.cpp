@@ -85,7 +85,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   thermo_virial = 1;
   create_attribute = 1;
   dof_flag = 1;
-  enforce2d_flag = 1;
+
   stores_ids = 1;
   dynamic_flag = 1;
   remesh_flag = 0;
@@ -93,7 +93,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
 
   restart_peratom = 1; //~ Per-atom information is saved to the restart file
   peratom_flag = 1;
-  size_peratom_cols = 7; //~ normal x/y/z, area and displacement speed x/y/z
+  size_peratom_cols = 8; //~ normal x/y/z, area and displacement speed x/y/z, cumulative displacement
   peratom_freq = 1; // every step, **TODO change to user input utils::inumeric(FLERR,arg[5],false,lmp);
   create_attribute = 1; //fix stores attributes that need setting when a new atom is created
 
@@ -123,6 +123,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
     vertexdata[i][0] = vertexdata[i][1] = vertexdata[i][2] = 0.0;
     vertexdata[i][3] = 0.0;
     vertexdata[i][4] = vertexdata[i][5] = vertexdata[i][6] = 0.0;
+    vertexdata[i][7] = 0.0;
   }
   
   // parse args for rigid body specification
@@ -811,6 +812,10 @@ void FixRigidAbrade::setup(int vflag)
     }
   }
 
+  // enforce 2d body forces and torques
+
+  if (domain->dimension == 2) enforce2d();
+
   // reverse communicate fcm, torque of all bodies
 
   commflag = FORCE_TORQUE;
@@ -1165,10 +1170,12 @@ void FixRigidAbrade::areas_and_normals() {
   int nghost = atom->nghost;
   int newton_bond = force->newton_bond;
 
+
   // Reset vertex data for local and ghost atoms -> since the ghost atoms may be be accessed when cycling through angles
   for (int i = 0; i < (nlocal + nghost); i++) {
 
     // Only processing properties relevant to bodies which have abraded and changed shape
+    if (atom2body[i] < 0) continue;
     if (!body[atom2body[i]].abraded_flag) continue;
 
     vertexdata[i][0] = 0.0; // x normal
@@ -1181,7 +1188,7 @@ void FixRigidAbrade::areas_and_normals() {
   norm2 = 0.0;
   norm3 = 0.0;
   sub_area = 0.0;
-  
+
   //  Storing each atom in each angle 
   for (n = 0; n < nanglelist; n++) {
    i1 = anglelist[n][0];
@@ -1236,10 +1243,14 @@ void FixRigidAbrade::areas_and_normals() {
   
     if  ((((centroid[0] - 0) * n1) + ((centroid[1] - 0) * n2) + ((centroid[2] - 0) * n3)) < 0) {
       
+        n1 = -n1;
+        n2 = -n2;
+        n3 = -n3;
+
       // if we are remeshing, we removed an atom (which has been abraded on this timestep) in the flipped angle
       if (remesh_flag) {
     
-        std::cout << me << ": angle (" << atom->tag[i1] << ", " << atom->tag[i2] << ", " << atom->tag[i3] << ") normal pointing inwards." << std::endl;
+        std::cout << me << "|" << update->ntimestep << ": angle (" << atom->tag[i1] << ", " << atom->tag[i2] << ", " << atom->tag[i3] << ") normal pointing inwards." << std::endl;
         
         if(i1 < nlocal) {
           displacement[0] = vertexdata[i1][4];
@@ -1249,7 +1260,7 @@ void FixRigidAbrade::areas_and_normals() {
                                               remesh(atom->tag[i1]);
                                               return;
                                               }
-        } else if(i2 < nlocal) {
+        } if(i2 < nlocal) {
           displacement[0] = vertexdata[i2][4];
           displacement[1] = vertexdata[i2][5];
           displacement[2] = vertexdata[i2][6];
@@ -1257,7 +1268,7 @@ void FixRigidAbrade::areas_and_normals() {
                                               remesh(atom->tag[i2]);
                                               return;
                                               }
-        } else if(i3 < nlocal) {
+        } if(i3 < nlocal) {
           displacement[0] = vertexdata[i3][4];
           displacement[1] = vertexdata[i3][5];
           displacement[2] = vertexdata[i3][6];
@@ -1267,14 +1278,26 @@ void FixRigidAbrade::areas_and_normals() {
                                               return;
                                               }
         }
-      } 
-      
-      // else we just flip the offending angle's normal
-      else {
-        n1 = -n1;
-        n2 = -n2;
-        n3 = -n3;
+
+        if(i1 < nlocal) {
+                                              std::cout << atom->tag[i1] << std::endl;
+                                              remesh(atom->tag[i1]);
+                                              return;
+                                              
+        } if(i2 < nlocal) {
+                                              std::cout << atom->tag[i2] << std::endl;
+                                              remesh(atom->tag[i2]);
+                                              return;
+                                              
+        } if(i3 < nlocal) {
+        
+                                              std::cout << atom->tag[i3] << std::endl;
+                                              remesh(atom->tag[i3]);
+                                              return;
+                                              
         }
+      } 
+            
     }
 
     // Sub-edge 1
@@ -1340,7 +1363,8 @@ void FixRigidAbrade::areas_and_normals() {
     vertexdata[i1][0] += n1*sub_area;
     vertexdata[i1][1] += n2*sub_area;
     vertexdata[i1][2] += n3*sub_area;
-  }
+    
+    }
 
   // reverse communicate contribution to normals of ghost atoms
   // This is required for particles that straddle domain boundaries
@@ -1359,11 +1383,11 @@ void FixRigidAbrade::areas_and_normals() {
     }
   }
 
-
   // normalise the length of all atom normals (and storing the in global coordinates)
   for (int i = 0; i < nlocal; i++) {
     
     // Only processing properties relevant to bodies which have abraded and changed shape
+    if (atom2body[i] < 0) continue;
     if (!body[atom2body[i]].abraded_flag) continue;
 
       double bodynormals[3];
@@ -1376,18 +1400,24 @@ void FixRigidAbrade::areas_and_normals() {
 
       Body *b = &body[atom2body[i]];
       
-      bodynormals[0] = norm1/length;
-      bodynormals[1] = norm2/length;
-      bodynormals[2] = norm3/length; 
+      // bodynormals[0] = norm1/length;
+      // bodynormals[1] = norm2/length;
+      // bodynormals[2] = norm3/length; 
 
-      MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,bodynormals,globalnormals);
+      // MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,bodynormals,globalnormals);
 
-      vertexdata[i][0] = globalnormals[0];
-      vertexdata[i][1] = globalnormals[1];
-      vertexdata[i][2] = globalnormals[2];
+      // vertexdata[i][0] = globalnormals[0];
+      // vertexdata[i][1] = globalnormals[1];
+      // vertexdata[i][2] = globalnormals[2];
   
+      // Storing normals in body coordinates
+      vertexdata[i][0] = norm1/length;
+      vertexdata[i][1] = norm2/length;
+      vertexdata[i][2] = norm3/length;
+      
       // Calculating the surface area of each body
       if (remesh_flag){  
+        // std::cout << "Setting surface area += " << fabs(vertexdata[i][3]) << std::endl;
         area_of_atom = fabs(vertexdata[i][3]);
         b->surface_area += area_of_atom;
 
@@ -1399,8 +1429,8 @@ void FixRigidAbrade::areas_and_normals() {
       }
     }
   
+
   if (remesh_flag){
-  
     // Checking if the surface density of any bodies requires that they be remeshed
     // NOTE: natoms is decreased by one to account for the atom placed at the COM of each body
     for (int ibody = 0; ibody < nlocal_body; ibody++) {
@@ -1409,9 +1439,9 @@ void FixRigidAbrade::areas_and_normals() {
 
       // Setting the surface_density_thresholds used as a condition for remeshing 
       if (setup_surface_density_threshold_flag) {
-        
+
         std::cout << "Body: " << ibody << " natoms: " << (body[ibody].natoms-1) << " S_A: " << body[ibody].surface_area << std::endl;
-        body[ibody].surface_density_threshold = ((body[ibody].natoms-1)/body[ibody].surface_area)*1.0125; }
+        body[ibody].surface_density_threshold = ((body[ibody].natoms-1)/body[ibody].surface_area); }
         
       
       // If the surface atom density has increased beyond the inital threshold we remesh the body atom with the minimum associated area (at the region of highest density)
@@ -1427,6 +1457,7 @@ void FixRigidAbrade::areas_and_normals() {
     
     }
   }
+
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1434,11 +1465,12 @@ void FixRigidAbrade::areas_and_normals() {
 void FixRigidAbrade::displacement_of_atom(int i, double impacting_radius, double x_rel[3], double v_rel[3]) {
 
   // Converting normals from body coordinates to global system so they can be compared with atom velocities
-  double global_normals[3] = {vertexdata[i][0], vertexdata[i][1], vertexdata[i][2]};
-  // double global_normals[3];
+  // double global_normals[3] = {vertexdata[i][0], vertexdata[i][1], vertexdata[i][2]};
+  double bodynormals[3] = {vertexdata[i][0], vertexdata[i][1], vertexdata[i][2]};
+  double global_normals[3];
 
   Body *b = &body[atom2body[i]];
-  // MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,normals,global_normals);
+  MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,bodynormals,global_normals);
 
   // Checking if the normal and relative velocities are facing towards oneanother, indicating the gap between i and j is closing
   bool gap_is_shrinking = (MathExtra::dot3(v_rel, global_normals) < 0);
@@ -1818,7 +1850,7 @@ origin_to_removed_atom[1] = origin_to_removed_atom[1]/normal_len;
 origin_to_removed_atom[2] = origin_to_removed_atom[2]/normal_len;
 
 
-// Projecting the boundary_coords onto a plane defined by the removed atoms normal
+// Projecting the boundary_coords onto a plane defined by the vector connecting the COM to the removed atom
 
 std::vector<std::vector<double>> boundary_projected;
 double v[3];
@@ -2104,6 +2136,8 @@ std::vector<std::vector<int>> best_choice_angles = valid_meshes[best_choice];
     delete boundary;
     delete atype;
 
+    areas_and_normals();
+
   // // Printing that an atom was successfully deleted
   // if (comm->me == 0) {
   //   std::string mesg = fmt::format("Deleted {} atoms, new total = {}\n", ndelete, atom->natoms);
@@ -2301,8 +2335,12 @@ void FixRigidAbrade::final_integrate()
 
   //check(3);
 
-  if (!earlyflag) compute_forces_and_torques();
+  // compute forces and torques (after all post_force contributions)
+  // if 2d model, enforce2d() on body forces/torques
 
+  if (!earlyflag) compute_forces_and_torques();
+  if (domain->dimension == 2) enforce2d();
+  
   // update vcm and angmom, recompute omega
 
   for (int ibody = 0; ibody < nlocal_body; ibody++) {
@@ -2353,14 +2391,16 @@ void FixRigidAbrade::final_integrate()
     global_displace_vel[0] = vertexdata[i][4];
     global_displace_vel[1] = vertexdata[i][5];
     global_displace_vel[2] = vertexdata[i][6];
-    
+
+    // If storing normals in global coordinates, the normals must always be recalculated to reflect the updated positions of atoms
+    // If we are storing in body coordinates they only need updating following an abrasion 
     if (!MathExtra::len3(global_displace_vel)) continue;
     
-
     // Flagging that the body owning atom i has been abraded and has changed shape
     Body *b = &body[atom2body[i]];
     b->abraded_flag = 1;
     proc_abraded_flag = 1;
+
 
     // Convert displacement velocities from global coordinates to body coordinates 
     MathExtra::transpose_matvec(b->ex_space,b->ey_space,b->ez_space, global_displace_vel, body_displace_vel);
@@ -2369,6 +2409,10 @@ void FixRigidAbrade::final_integrate()
     displace[i][0] += dtv * body_displace_vel[0];
     displace[i][1] += dtv * body_displace_vel[1];
     displace[i][2] += dtv * body_displace_vel[2];
+
+    // Update the cumulative
+    vertexdata[i][7] += sqrt( ((dtv * body_displace_vel[0])*(dtv * body_displace_vel[0])) + ((dtv * body_displace_vel[1])*(dtv * body_displace_vel[1])) + ((dtv * body_displace_vel[2])*(dtv * body_displace_vel[2])));
+
 
 
     // Convert the postiion of atom i from body coordinates to global coordinates 
@@ -2419,18 +2463,7 @@ void FixRigidAbrade::final_integrate()
         // recalculate properties and normals for each abraded body 
         // TODO: Check if not updating the rigid body properties affects the abrasion for a stationary particle
         if (dynamic_flag) resetup_bodies_static(); 
-        
-        int original_count = atom->nlocal;    
-        
-        while (true){
-
         areas_and_normals();
-
-        if (original_count == atom->nlocal) break;
-        else original_count = atom->nlocal;
-        }
-       
-    
     }
 
     // Setting the displacement velocities of all atoms back to 0
@@ -2503,6 +2536,7 @@ void FixRigidAbrade::pre_neighbor()
   //check(4);
 
   image_shift();
+
 }
 
 /* ----------------------------------------------------------------------
@@ -2541,7 +2575,7 @@ void FixRigidAbrade::image_shift()
    return total count of DOF
 ------------------------------------------------------------------------- */
 
-int FixRigidAbrade::dof(int tgroup)
+bigint FixRigidAbrade::dof(int tgroup)
 {
   int i,j;
 
@@ -2561,7 +2595,7 @@ int FixRigidAbrade::dof(int tgroup)
   // 1 = # of finite-size particles in rigid body and in temperature group
   // 2 = # of particles in rigid body, disregarding temperature group
 
-  memory->create(counts,nlocal_body+nghost_body,3,"rigid/abrade:counts");
+  memory->create(counts,nlocal_body+nghost_body,3,"rigid/small:counts");
   for (i = 0; i < nlocal_body+nghost_body; i++)
     counts[i][0] = counts[i][1] = counts[i][2] = 0;
 
@@ -2597,7 +2631,7 @@ int FixRigidAbrade::dof(int tgroup)
   }
   int flagall;
   MPI_Allreduce(&flag,&flagall,1,MPI_INT,MPI_MAX,world);
-  if (flagall && me == 0)
+  if (flagall && comm->me == 0)
     error->warning(FLERR,"Computing temperature of portions of rigid bodies");
 
   // remove appropriate DOFs for each rigid body wholly in temperature group
@@ -2613,7 +2647,7 @@ int FixRigidAbrade::dof(int tgroup)
 
   double *inertia;
 
-  int n = 0;
+  bigint n = 0;
   nlinear = 0;
   if (domain->dimension == 3) {
     for (int ibody = 0; ibody < nlocal_body; ibody++) {
@@ -2634,8 +2668,8 @@ int FixRigidAbrade::dof(int tgroup)
 
   memory->destroy(counts);
 
-  int nall;
-  MPI_Allreduce(&n,&nall,1,MPI_INT,MPI_SUM,world);
+  bigint nall;
+  MPI_Allreduce(&n,&nall,1,MPI_LMP_BIGINT,MPI_SUM,world);
   return nall;
 }
 
@@ -4756,6 +4790,7 @@ void FixRigidAbrade::set_arrays(int i)
   vertexdata[i][4] = 0.0;
   vertexdata[i][5] = 0.0;
   vertexdata[i][6] = 0.0;
+  vertexdata[i][7] = 0.0;
 
   // must also zero vatom if per-atom virial calculated on this timestep
   // since vatom is calculated before and after atom migration
