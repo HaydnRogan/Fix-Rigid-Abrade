@@ -48,7 +48,6 @@ class FixRigidAbrade : public Fix {
   void copy_arrays(int, int, int) override;
   void set_arrays(int) override;
   void set_molecule(int, tagint, int, double *, double *, double *) override;
-
   int pack_exchange(int, double *) override;
   int unpack_exchange(int, double *) override;
   int pack_forward_comm(int, int *, double *, int, int *) override;
@@ -70,7 +69,7 @@ class FixRigidAbrade : public Fix {
   double compute_scalar() override;
   double memory_usage() override;
 
-  double **vertexdata;   // array to store the normals, areas, and displacement velocities of each atom (public to allow access from pairstyles)
+  double **vertexdata;   // array to store the normals, areas, and displacement velocities, and cumulative displacement of each atom (public to allow access from pairstyles)
   
 
 private:
@@ -78,21 +77,20 @@ private:
   class NeighList *list;
   void areas_and_normals();
   void displacement_of_atom(int, double, double[3], double[3]);
-  char *owning_atoms;      // group containing all atoms which own rigid bodies
   
-  int *dlist;
+  
+  
   int allflag, compress_flag, bond_flag, mol_flag;
-  int setup_surface_density_threshold_flag;
-  int *atype;
   
-  std::map<tagint, int> *hash;
-  std::vector<std::vector<tagint>> *new_angles_list;
-  std::vector<tagint> *boundary;
 
+  int setup_surface_density_threshold_flag;
   bool angle_check(int, int, std::vector<std::vector<double>>, std::vector<std::vector<double>>, double[3]);
   void remesh(int);
-  static void bondring(int, char *, void *);
-
+  bigint lastcheck;
+  int equalise_surface_flag = 0;
+  double old_STD_area = 100000.0;
+  
+  void equalise_surface();
 
  protected:
   int me, nprocs;
@@ -108,6 +106,7 @@ private:
   int setupflag;       // 1 if body properties are setup, else 0
   int dynamic_flag;    // 0 if bodies are held sationary and prevents the COM from being integrated
   int remesh_flag;    //  1 if bodies are to be remeshed following a change in shape
+  int initial_remesh_flag; //  1 if bodies are to be remeshed at the start of the simulation to equalise the area_per_atom
   int earlyflag;       // 1 if forces/torques are computed at post_force()
   int commflag;        // various modes of forward/reverse comm
   int customflag;      // 1 if custom property/variable define bodies
@@ -126,7 +125,7 @@ private:
     int natoms;            // total number of atoms in body
     int ilocal;            // index of owning atom
     double mass;           // total mass of body
-    double volume;         // total mass of body
+    double volume;         // total volume of body
 
     double surface_area; // total surface area of the body
     double surface_density_threshold; // natoms/surface_area density calculated at setup to act as a condition for remeshing
