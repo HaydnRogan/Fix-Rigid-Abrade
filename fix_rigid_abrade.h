@@ -23,6 +23,7 @@ FixStyle(rigid/abrade,FixRigidAbrade);
 #include "fix.h"
 #include <map>
 #include <vector>
+#include <algorithm> 
 
 namespace LAMMPS_NS {
 
@@ -39,6 +40,7 @@ class FixRigidAbrade : public Fix {
   void initial_integrate(int) override;
   void post_force(int) override;
   void final_integrate() override;
+  void end_of_step() override;
   void initial_integrate_respa(int, int, int) override;
   void final_integrate_respa(int, int) override;
   void write_restart_file(const char *) override;
@@ -85,10 +87,16 @@ private:
 
   int setup_surface_density_threshold_flag;
   bool angle_check(int, int, std::vector<std::vector<double>>, std::vector<std::vector<double>>, double[3]);
-  void remesh(int);
+  void remesh(std::vector<int>);
+  
+  std::vector<int> dlist;
+  std::vector<int> total_dlist;
+
+  int delete_atom_flag;
+
   bigint lastcheck;
   int equalise_surface_flag = 0;
-  double old_STD_area = 100000.0;
+  
   
   void equalise_surface();
 
@@ -100,7 +108,7 @@ private:
   bool proc_abraded_flag; // A flag which marks if any owned or ghost atoms on a processor have been abraded
 
   // Modified Commflags
-  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM_ANGMOM, XCM_MASS, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG, PROC_ABRADED_FLAG, OWNING_ATOMS};
+  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM, ANGMOM, XCM_MASS, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG, PROC_ABRADED_FLAG, OWNING_ATOMS};
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
@@ -149,8 +157,13 @@ private:
     double conjqm[4];      // conjugate quaternion momentum
     int remapflag[4];      // PBC remap flags
     bool abraded_flag;     // flag which marks that the body has abraded and changed shape
+    bool body_remesh_flag;      // flag used to limit one atom being remeshed from a given body for each call of remesh() 
     imageint image;        // image flags of xcm
     imageint dummy;        // dummy entry for better alignment
+  
+    double old_STD_area; // TODO: This would be better placed as an array initiated and delated around their use in equalise_surface()
+    
+  
   };
 
   Body *body;         // list of rigid bodies, owned and ghost
