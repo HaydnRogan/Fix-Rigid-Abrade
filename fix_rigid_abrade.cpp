@@ -597,6 +597,7 @@ int FixRigidAbrade::setmask()
   int mask = 0;
   mask |= INITIAL_INTEGRATE;
   mask |= FINAL_INTEGRATE;
+  mask |= END_OF_STEP;
   mask |= POST_FORCE;
   // if (langflag) mask |= POST_FORCE;
   mask |= PRE_NEIGHBOR;
@@ -730,8 +731,8 @@ void FixRigidAbrade::setup_pre_neighbor()
     neighbor->build_topology();
     setup_bodies_static();
     setup_surface_density_threshold_flag = 1;
+    delete_atom_flag = 100001;
     areas_and_normals();
-    if (initial_remesh_flag) equalise_surface();
     setup_surface_density_threshold_flag = 0;
     }
   
@@ -739,6 +740,8 @@ void FixRigidAbrade::setup_pre_neighbor()
 
   if ((reinitflag || !setupflag) && !inpfile)
     setup_bodies_dynamic();
+
+if (initial_remesh_flag) equalise_surface();
 
   setupflag = 1;
 }
@@ -804,22 +807,22 @@ void FixRigidAbrade::setup(int vflag)
     tcm[2] += dx * f[i][1] - dy * f[i][0];
   }
 
-  // extended particles add their rotation/torque to angmom/torque of body
+  // // extended particles add their rotation/torque to angmom/torque of body
 
-  if (extended) {
-    double **torque = atom->torque;
+  // if (extended) {
+  //   double **torque = atom->torque;
 
-    for (i = 0; i < nlocal; i++) {
-      if (atom2body[i] < 0) continue;
-      Body *b = &body[atom2body[i]];
-      if (eflags[i] & TORQUE) {
-        tcm = b->torque;
-        tcm[0] += torque[i][0];
-        tcm[1] += torque[i][1];
-        tcm[2] += torque[i][2];
-      }
-    }
-  }
+  //   for (i = 0; i < nlocal; i++) {
+  //     if (atom2body[i] < 0) continue;
+  //     Body *b = &body[atom2body[i]];
+  //     if (eflags[i] & TORQUE) {
+  //       tcm = b->torque;
+  //       tcm[0] += torque[i][0];
+  //       tcm[1] += torque[i][1];
+  //       tcm[2] += torque[i][2];
+  //     }
+  //   }
+  // }
 
   // enforce 2d body forces and torques
 
@@ -1152,8 +1155,7 @@ void FixRigidAbrade::post_force(int /*vflag*/)
 /* ---------------------------------------------------------------------- */
 void FixRigidAbrade::equalise_surface() {
 
-
-
+       dlist.clear();
        equalise_surface_flag = 1;
        setup_surface_density_threshold_flag = 1;
       
@@ -1181,40 +1183,47 @@ void FixRigidAbrade::equalise_surface() {
         double STD_area_normalised = sqrt((sum_area_minus_average_sq)/(body[ibody].natoms - 1))/average_surface_area;
 
         // Removing the atom with the smallest associated area to minimise the STD
-        std::cout << "% STD SA of body " << ibody << " = " << body[ibody].surface_area << "||" << STD_area_normalised << "||" << old_STD_area << std::endl;
-        if (STD_area_normalised < old_STD_area) {
-        old_STD_area = STD_area_normalised;
-        remesh(body[ibody].min_area_atom_tag);
-        return;
+        std::cout << "% STD SA of body " << ibody << " = " << body[ibody].surface_area << "||" << STD_area_normalised << "||" << body[ibody].old_STD_area << std::endl;
+        if (STD_area_normalised < body[ibody].old_STD_area) {
+        body[ibody].old_STD_area = STD_area_normalised;
+        dlist.push_back(body[ibody].min_area_atom_tag);
         }
 
         // Updating the surface_density_threshold which is used as a remeshing condition moving forward
         std::cout << "Body: " << ibody << " natoms: " << (body[ibody].natoms-1) << " S_A: " << body[ibody].surface_area << std::endl;
-        body[ibody].surface_density_threshold = ((body[ibody].natoms-1)/body[ibody].surface_area); 
+        body[ibody].surface_density_threshold = ((body[ibody].natoms-1)/body[ibody].surface_area*1.01); 
     }
     
-    
-    // Setting flags to end equalise surface
-    equalise_surface_flag = 0;
-    setup_surface_density_threshold_flag = 0;
+    if(dlist.size()) remesh(dlist);
+  
 
-    std::cout << "resetting up bodies" << std::endl;
-    // Resetting up the bodies to conform to new mesh
+    if (total_dlist.size() && equalise_surface_flag){
+
+  
     resetup_bodies_static();
+
+    equalise_surface_flag = 0;
+
+    areas_and_normals();
+  
+    // Setting flags to end equalise surface
+
+    setup_surface_density_threshold_flag = 0;
 
     // Resetting abraded flag for all bodies
     for (int ibody = 0; ibody < nlocal_body; ibody++) {
       body[ibody].abraded_flag = 0;
     }
 
-  initial_remesh_flag = 0;
-
-
-
+    initial_remesh_flag = 0;
+    }
+ 
 }
 
 void FixRigidAbrade::areas_and_normals() {
-  
+
+  dlist.clear();
+
   // forward communicate displace[i] to ghost atoms since areas and normals are calculated in body coordinates
   commflag = DISPLACE;
   comm->forward_comm(this,3);
@@ -1256,6 +1265,9 @@ void FixRigidAbrade::areas_and_normals() {
   norm1 = 0.0;
   norm2 = 0.0;
   norm3 = 0.0;
+
+
+  for (int ibody = 0; ibody < nlocal_body; ibody++) body[ibody].body_remesh_flag = 0;
 
   //  Storing each atom in each angle 
  for (n = 0; n < nanglelist; n++) {
@@ -1326,16 +1338,20 @@ void FixRigidAbrade::areas_and_normals() {
           displacement[1] = vertexdata[i1][5];
           displacement[2] = vertexdata[i1][6];
           if (MathExtra::len3(displacement)) {std::cout << atom->tag[i1] << std::endl;
-                                              remesh(atom->tag[i1]);
-                                              return;
+                                              if (!body[atom2body[i1]].body_remesh_flag) {
+                                                body[atom2body[i1]].body_remesh_flag = 1;
+                                                dlist.push_back(atom->tag[i1]);}
+                                              // return;
                                               }
         } if(i2 < nlocal) {
           displacement[0] = vertexdata[i2][4];
           displacement[1] = vertexdata[i2][5];
           displacement[2] = vertexdata[i2][6];
           if (MathExtra::len3(displacement)) {std::cout << atom->tag[i2] << std::endl;
-                                              remesh(atom->tag[i2]);
-                                              return;
+                                              if (!body[atom2body[i2]].body_remesh_flag) {
+                                                body[atom2body[i2]].body_remesh_flag = 1;
+                                                dlist.push_back(atom->tag[i2]);}
+                                              // return;
                                               }
         } if(i3 < nlocal) {
           displacement[0] = vertexdata[i3][4];
@@ -1343,26 +1359,34 @@ void FixRigidAbrade::areas_and_normals() {
           displacement[2] = vertexdata[i3][6];
           if (MathExtra::len3(displacement)) {
                                               std::cout << atom->tag[i3] << std::endl;
-                                              remesh(atom->tag[i3]);
-                                              return;
+                                              if (!body[atom2body[i3]].body_remesh_flag) {
+                                                body[atom2body[i3]].body_remesh_flag = 1;
+                                                dlist.push_back(atom->tag[i3]);}
+                                              // return;
                                               }
         }
 
         if(i1 < nlocal) {
                                               std::cout << atom->tag[i1] << std::endl;
-                                              remesh(atom->tag[i1]);
-                                              return;
+                                              if (!body[atom2body[i1]].body_remesh_flag) {
+                                                body[atom2body[i1]].body_remesh_flag = 1;
+                                                dlist.push_back(atom->tag[i1]);}
+                                              // return;
                                               
         } if(i2 < nlocal) {
                                               std::cout << atom->tag[i2] << std::endl;
-                                              remesh(atom->tag[i2]);
-                                              return;
+                                              if (!body[atom2body[i2]].body_remesh_flag) {
+                                                body[atom2body[i2]].body_remesh_flag = 1;
+                                                dlist.push_back(atom->tag[i2]);}
+                                              // return;
                                               
         } if(i3 < nlocal) {
         
                                               std::cout << atom->tag[i3] << std::endl;
-                                              remesh(atom->tag[i3]);
-                                              return;
+                                              if (!body[atom2body[i3]].body_remesh_flag) {
+                                                body[atom2body[i3]].body_remesh_flag = 1;
+                                                dlist.push_back(atom->tag[i3]);}
+                                              // return;
                                               
         }
       } 
@@ -1449,37 +1473,64 @@ void FixRigidAbrade::areas_and_normals() {
           }
         }
       }
-    }
+    } 
+
 
   if (remesh_flag){
     // Checking if the surface density of any bodies requires that they be remeshed
     // NOTE: natoms is decreased by one to account for the atom placed at the COM of each body
     for (int ibody = 0; ibody < nlocal_body; ibody++) {
       
+      // std::cout << update->ntimestep << ": Body: " << ibody << " min_area_atom: " << body[ibody].min_area_atom_tag  << " (" << body[ibody].min_area_atom <<")"<< std::endl;
+
       if (!body[ibody].abraded_flag) continue;
 
       // Setting the surface_density_thresholds used as a condition for remeshing 
       if (setup_surface_density_threshold_flag) {
-        std::cout << "Body: " << ibody << " natoms: " << (body[ibody].natoms-1) << " S_A: " << body[ibody].surface_area << std::endl;
-        body[ibody].surface_density_threshold = ((body[ibody].natoms-1)/body[ibody].surface_area); 
+        // std::cout << "Body: " << ibody << " natoms: " << (body[ibody].natoms-1) << " S_A: " << body[ibody].surface_area << std::endl;
+        body[ibody].surface_density_threshold = ((body[ibody].natoms-1)/body[ibody].surface_area)*1.01; 
         }
       
       // If the surface atom density has increased beyond the inital threshold we remesh the body atom with the minimum associated area (at the region of highest density)
       if ((body[ibody].natoms-1)/body[ibody].surface_area > body[ibody].surface_density_threshold) {
-        std::cout << update->ntimestep <<" : Body: " << ibody << " surface density " << (body[ibody].natoms-1)/body[ibody].surface_area << " || " << body[ibody].surface_density_threshold << " natoms: " << (body[ibody].natoms-1) << std::endl;
-        remesh(body[ibody].min_area_atom_tag);
+        // std::cout << update->ntimestep <<" : Body: " << ibody << " surface density " << (body[ibody].natoms-1)/body[ibody].surface_area << " || " << body[ibody].surface_density_threshold << " natoms: " << (body[ibody].natoms-1) << std::endl;
+        
+         if (!body[ibody].body_remesh_flag){dlist.push_back(body[ibody].min_area_atom_tag);
+                                            body[ibody].body_remesh_flag = 1; }
       } 
 
+      // if (delete_atom_flag < 100){
+      //   std::cout << "attempting to add (" << body[ibody].body_remesh_flag << ")" << std::endl;
+      // if (!body[ibody].body_remesh_flag){
+                                    
+      //                               dlist.push_back(body[ibody].min_area_atom_tag);
+      //                               body[ibody].body_remesh_flag = 1;
+      //                               std::cout << "Added (" << body[ibody].body_remesh_flag << ")" << std::endl; }}
+
       // If the body hasn't been remeshed we can set its abraded flag to 0 so it is not considered when reprocessing the area_and_normals on the current timestep
-      else {
+      if (!body[ibody].body_remesh_flag) {
         body[ibody].abraded_flag = 0; 
       }
     
     }
+    
+    // std::cout << "(" << update->ntimestep << ") PRE: neighbor->nanglelist" << neighbor->nanglelist << ", atom->nangles: " << atom->nangles  << ",  atoms->nlocal: " <<  atom->nlocal << ",  atom->natoms: " <<  atom->natoms << std::endl;
   }
 
-if (equalise_surface_flag) equalise_surface();
 
+
+
+
+
+
+
+
+if (dlist.size()){
+    std::cout << "dlist: ";
+    for (int d = 0; d < dlist.size(); d++)std::cout << dlist[d] << " "; std::cout << std::endl;
+   remesh(dlist);}
+
+if (equalise_surface_flag) equalise_surface();
 }
 
 
@@ -1633,7 +1684,8 @@ bool FixRigidAbrade::angle_check(int base, int target, std::vector<std::vector<d
 
     MathExtra::cross3(ab,ac,normal);
 
-    if (MathExtra::dot3(normal, origin_centroid) < 0){
+    double projected_normal[3] = {0.0,0.0,1.0};
+    if (MathExtra::dot3(normal, projected_normal) < 0){
         // Angle points inwards in projected coordinates
         valid_angle = false;
         return valid_angle;
@@ -1720,17 +1772,13 @@ bool FixRigidAbrade::angle_check(int base, int target, std::vector<std::vector<d
   return valid_angle;
 }
 
-void FixRigidAbrade::remesh(int remove_tag){
-  
-  std::cout << " Attempting to remesh atom " << remove_tag << " ("<< atom->map(remove_tag) <<")" << std::endl;
-
-  // Only attempt to remesh if the atom is a part of a body
-  if (atom2body[atom->map(remove_tag)] < 0) return;
-
-  // Set abraded flag of body of removed atom so that it considered in areas_and_normals()
-  body[atom2body[atom->map(remove_tag)]].abraded_flag = 1;
-  
-  // taken from fix_bond_break.cpp
+void FixRigidAbrade::remesh(std::vector<int> dlist){
+    delete_atom_flag += 1;
+  // delete_atom_flag = 0;
+  // adapted from fix_bond_break.cpp
+  // forward communicate displace[i] to ghost atoms since body coordingates will be used to remesh
+  commflag = DISPLACE;
+  comm->forward_comm(this,3);
 
   // check that all procs have the needed ghost atoms within ghost cutoff
   // only if neighbor list has changed since last check
@@ -1757,19 +1805,50 @@ void FixRigidAbrade::remesh(int remove_tag){
     error->all(FLERR,"Fix bond/break needs ghost atoms from further away");
   lastcheck = update->ntimestep;
   }
+  
+  int remove_tag = 0;
+  std::vector<std::vector<tagint>> boundaries;
+  std::vector<std::vector<std::vector<tagint>>> edges;
 
-  // forward communicate displace[i] to ghost atoms since body coordingates will be used to remesh
-  commflag = DISPLACE;
-  comm->forward_comm(this,3);
+  for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i ++) {
 
-  std::vector<tagint> boundary;
-  std::vector<std::vector<tagint>> edges;
+  remove_tag = dlist[dlist_i];
+
+  std::cout << update->ntimestep << ": Attempting to remesh atom " << remove_tag << " ("<< atom->map(remove_tag) <<")" << std::endl;
+
+  // Only attempt to remesh if the atom is a part of a body
+  if (atom2body[atom->map(remove_tag)] < 0) error->all(FLERR,"Fix Rigid/Abrade has attempted to remesh an atom that does not belong to a rigid body.");;
+
+  // initiate vector to hold the boundaries and edges for each atom in dlist(intiated now to preserve indexing)
+  boundaries.push_back({});
+  edges.push_back({});
+
+  tagint remove_id = atom->map(remove_tag);
+  // decrementing the number of atoms in the owning body such that the surface density threshold can be correctly calulcated on subsequent areas_and_normals calls.
+  body[atom2body[remove_id]].natoms--;
+
+
+  // Set abraded flag of body of removed atom so that it considered in areas_and_normals()
+  body[atom2body[remove_id]].abraded_flag = 1;
+
+  // Marking that the atom no longer belongs to a body so that it is not processed in areas_and_normals
+  // Again, this is to prevent the need to repeatedly rebuild the neighbor lists each time an atom is removed.
+  atom2body[remove_id] = -1;
+  
+
+  // storing all the atoms that have been remeshed on this timestep so that they can be deleted before the neighborlists are rebuilt.
+  // This is a separate vector to dlist since multiple dlists can be remeshed on a given timestep under a single rebuilding of the neighbor lists.
+  total_dlist.push_back(remove_tag);
+  
+  }
 
   int nlocal = atom->nlocal;
   int nangles = 0;
   
   
-  // Break any angle which contains the target atom and store the type of angles used 
+  std::cout << "Breaking angles" << std::endl;
+
+  // Break any angle which contains a target atom in dlist and store the type of angles used 
   int remesh_atype;
   for (int m = 0; m < nlocal; m++){
     int j,found;
@@ -1784,11 +1863,13 @@ void FixRigidAbrade::remesh(int remove_tag){
     
     while (i < num_angle) {
       found = 0;
-      if (angle_atom1[i] == remove_tag || angle_atom2[i] == remove_tag || angle_atom3[i] == remove_tag) found = 1;
+      
+      if (count(dlist.begin(), dlist.end(), angle_atom1[i]) || count(dlist.begin(), dlist.end(), angle_atom2[i]) || count(dlist.begin(), dlist.end(), angle_atom3[i])) found = 1;
       remesh_atype = angle_type[i];
-      if (angle_atom1[i] == remove_tag) edges.push_back({angle_atom2[i], angle_atom3[i]});
-      if (angle_atom2[i] == remove_tag) edges.push_back({angle_atom3[i], angle_atom1[i]});
-      if (angle_atom3[i] == remove_tag) edges.push_back({angle_atom1[i], angle_atom2[i]});
+      if (count(dlist.begin(), dlist.end(), angle_atom1[i])) edges[static_cast<int>(find(dlist.begin(), dlist.end(), angle_atom1[i]) - dlist.begin())].push_back({angle_atom2[i], angle_atom3[i]});
+      if (count(dlist.begin(), dlist.end(), angle_atom2[i])) edges[static_cast<int>(find(dlist.begin(), dlist.end(), angle_atom2[i]) - dlist.begin())].push_back({angle_atom3[i], angle_atom1[i]});
+      if (count(dlist.begin(), dlist.end(), angle_atom3[i])) edges[static_cast<int>(find(dlist.begin(), dlist.end(), angle_atom3[i]) - dlist.begin())].push_back({angle_atom1[i], angle_atom2[i]});
+
 
       if (!found) i++;
       else {
@@ -1806,34 +1887,49 @@ void FixRigidAbrade::remesh(int remove_tag){
     atom->num_angle[m] = num_angle;
   }
 
-    // Constructing the boundary in a CCW direction from the edges
-      if (edges.size()){
+  std::cout << "Constructing Boundaries" << std::endl;
+
+    // Constructing the boundary for each deleted atom in a CCW direction from the correspoinding edges
+ 
+    for (int edge = 0; edge < edges.size(); edge++){
+        if (edges[edge].size()){
 
           int count = 2;
-          (boundary).push_back(edges[0][0]);
-          (boundary).push_back(edges[0][1]);
-          tagint current_atom = edges[0][1];
+          (boundaries[edge]).push_back(edges[edge][0][0]);
+          (boundaries[edge]).push_back(edges[edge][0][1]);
+          tagint current_atom = edges[edge][0][1];
 
-          while (count < edges.size()){
-            for (int i = 0; i < edges.size(); i++){
-              if (edges[i][0] == current_atom) {
-                current_atom = edges[i][1];
-                (boundary).push_back(current_atom);
+          while (count < edges[edge].size()){
+            for (int i = 0; i < edges[edge].size(); i++){
+              if (edges[edge][i][0] == current_atom) {
+                current_atom = edges[edge][i][1];
+                (boundaries[edge]).push_back(current_atom);
                 count ++;
-                if(count == edges.size()) break;
+                if(count == edges[edge].size()) break;
               }
             }  
           }
         }
+      }
 
-    // std::cout << "Boundary: " << std::endl;
-    // for (int q = 0; q < (boundary).size(); q++){
-    //   std::cout << (boundary)[q] << " ";
-    // } std::cout << std::endl;
-    // REMESH BOUNDARY......
 
+std::cout << "Generating Angles" << std::endl;
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~ NEW ANGLE GENERATION START  ~~~~~~~~~~~~~~~~~~~~~~~~~~
-  
+std::vector<std::vector<tagint>> new_angles_list;
+
+
+
+for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++){
+
+  remove_tag = dlist[dlist_i];  
+  std::vector<tagint> boundary = boundaries[dlist_i];
+
+    std::cout << "Boundary: " << std::endl;
+    for (int q = 0; q < (boundary).size(); q++){
+      std::cout << (boundary)[q] << " ";
+    } std::cout << std::endl;
+
+
   // Storing target atom's position in its body coordinates
   double removed_atom_position[3];
   removed_atom_position[0] = displace[atom->map(remove_tag)][0];
@@ -1841,7 +1937,7 @@ void FixRigidAbrade::remesh(int remove_tag){
   removed_atom_position[2] = displace[atom->map(remove_tag)][2];
 
   double origin_to_removed_atom[3];
-    std::vector<std::vector<tagint>> new_angles_list;
+    
 // std::cout << "Boundary: " << std::endl;
 // for (int q = 0; q < (boundary).size(); q++){
 //   std::cout << (boundary)[q] << " ";
@@ -1866,20 +1962,69 @@ origin_to_removed_atom[1] = origin_to_removed_atom[1]/normal_len;
 origin_to_removed_atom[2] = origin_to_removed_atom[2]/normal_len;
 
 
-// Projecting the boundary_coords onto a plane defined by the vector connecting the COM to the removed atom
+// // Projecting the boundary_coords onto a plane defined by the vector connecting the COM to the removed atom
+
+// std::vector<std::vector<double>> boundary_projected;
+// double v[3];
+// double dist;
+
+// // std::cout << " origin_to_removed_atom " << origin_to_removed_atom[0] << " " << origin_to_removed_atom[1] << " " << origin_to_removed_atom[2] << std::endl;
+// for (int i = 0; i < boundary_coords.size(); i++){
+//     double* point = &boundary_coords[i][0];
+//     MathExtra::sub3(point,removed_atom_position,v);
+//     dist = MathExtra::dot3(v,origin_to_removed_atom);
+//     // std::cout << "dist " << dist << std::endl;
+//     boundary_projected.push_back({point[0] - (dist*origin_to_removed_atom[0]), point[1] - (dist*origin_to_removed_atom[1]), point[2] - (dist*origin_to_removed_atom[2])});
+// }
+
+
+
+
+
+//  Projecting the boundary onto a plane defined by the removed atoms normal and defining them in a 2D coordinate system centred on the removed atom alligned to the plane
+// Equation of the plane defined by the removed atom and its normal
+// ax + by + cz = d
+
+double a_plane = origin_to_removed_atom[0];
+double b_plane = origin_to_removed_atom[1];
+double c_plane = origin_to_removed_atom[2];
+double d_plane = MathExtra::dot3(removed_atom_position,origin_to_removed_atom);
 
 std::vector<std::vector<double>> boundary_projected;
-double v[3];
-double dist;
 
-// std::cout << " origin_to_removed_atom " << origin_to_removed_atom[0] << " " << origin_to_removed_atom[1] << " " << origin_to_removed_atom[2] << std::endl;
 for (int i = 0; i < boundary_coords.size(); i++){
     double* point = &boundary_coords[i][0];
-    MathExtra::sub3(point,removed_atom_position,v);
-    dist = MathExtra::dot3(v,origin_to_removed_atom);
-    // std::cout << "dist " << dist << std::endl;
-    boundary_projected.push_back({point[0] - (dist*origin_to_removed_atom[0]), point[1] - (dist*origin_to_removed_atom[1]), point[2] - (dist*origin_to_removed_atom[2])});
+    double k = d_plane - a_plane*point[0] - b_plane*point[1] - c_plane*point[2];
+    boundary_projected.push_back({(point[0] + k*a_plane),(point[1] + k*b_plane),(point[2] + k*c_plane)});
 }
+
+
+
+
+    std::vector<std::vector<double>> boundary_projected_2d;
+    //  deining new axis connecting the removed atom to the first point in the boundary
+    double e1[3];
+    double* first_point = &boundary_projected[0][0];
+    MathExtra::sub3(removed_atom_position, first_point, e1);
+    e1[0] = e1[0]/ MathExtra::len3(e1);
+    e1[1] = e1[1]/ MathExtra::len3(e1);
+    e1[2] = e1[2]/ MathExtra::len3(e1);
+    // second axis is at right angle alligned on the plane
+    double e2[3];
+    MathExtra::cross3(origin_to_removed_atom, e1, e2);
+    e2[0] = e2[0]/ MathExtra::len3(e2);
+    e2[1] = e2[1]/ MathExtra::len3(e2);
+    e2[2] = e2[2]/ MathExtra::len3(e2);
+
+  for (int i = 0; i < boundary_projected.size(); i++){
+    double* point = &boundary_projected[i][0];
+        boundary_projected_2d.push_back({MathExtra::dot3(point,e1), MathExtra::dot3(point,e2), 0.0});
+  }
+
+  boundary_projected = boundary_projected_2d;
+    
+
+    
 
 // Start of remeshing scheme
 std::vector<std::vector<std::vector<int>>> valid_meshes;
@@ -2035,10 +2180,10 @@ for (int permutation = 0; permutation < boundary_coords.size(); permutation ++){
 // Printing out the valid meshes
 if (valid_meshes.size() == 0){
 
-  std::cout << " Atom: " << remove_tag << " Boundary: " << std::endl;
+  std::cout << " Atom: " << remove_tag << " (" << removed_atom_position[0] << ", " << removed_atom_position[1] << ", " << removed_atom_position[2] << ")" << " Boundary: " << std::endl;
 
 for (int q = 0; q < (boundary).size(); q++){
-  std::cout << (boundary)[q] << " ";
+  std::cout << (boundary)[q] << " (" << boundary_coords[q][0] << ", " << boundary_coords[q][1] << ", " << boundary_coords[q][2] << ")" << std::endl;
   } std::cout << std::endl;
 
   error->all(FLERR,"Failed to remesh.");
@@ -2103,7 +2248,7 @@ std::vector<std::vector<int>> best_choice_angles = valid_meshes[best_choice];
 
     bool valid_permutation = true;
 
-    new_angles_list.clear();
+    // new_angles_list.clear();
     for (int i = 0; i < (best_choice_angles).size(); i ++){
       for (int j = 0; j < (best_choice_angles)[i].size(); j++){
       }
@@ -2112,7 +2257,7 @@ std::vector<std::vector<int>> best_choice_angles = valid_meshes[best_choice];
     }  
     
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~ NEW ANGLE GENERATION END  ~~~~~~~~~~~~~~~~~~~~~~~~~~
-
+}
 
 // // Create angles taken from fix_bond_create.cpp
 
@@ -2156,65 +2301,14 @@ for (int a = 0; a < (new_angles_list.size()); a++){
     atom->nangles -= all;
     
 
-  // delete local atoms that have remove_tag
-  // reset nlocal
-
-  AtomVec *avec = atom->avec;
-
-  int i = 0;
-  while (i < nlocal) {
-    if (atom->tag[i] == remove_tag) {
-      avec->copy(nlocal - 1, i, 1);
-      nlocal--;
-
-      // also decrement the number of atoms in the body
-      // TODO: Forward Communicate this
-
-      body[atom2body[i]].natoms--;
-    } else
-      i++;
-  }
-
-  atom->nlocal = nlocal;
-
-  // reset atom->natoms and also topology counts
-  bigint nblocal = atom->nlocal;
-  MPI_Allreduce(&nblocal, &atom->natoms, 1, MPI_LMP_BIGINT, MPI_SUM, world);
-
-  // reset atom->map if it exists
-  // set nghost to 0 so old ghosts of deleted atoms won't be mapped
-
-  if (atom->map_style != Atom::MAP_NONE) {
-    atom->nghost = 0;
-    atom->map_init();
-    atom->map_set();
-  }
-
-// Although costly, the neighbor lists must be rebuilt following each remeshing as well as any histories
-// This is to facilitate the subsequent calling of areas_and_normals() which uses neighbor->nanglelist
     
-    
-    std::vector<Fix *> fix_history_list = modify->get_fix_by_style("NEIGH_HISTORY");
-    
-    for (auto & fix_history : fix_history_list){
-    fix_history->pre_exchange();
-    }    
-    domain->pbc();
-    domain->reset_box();
-    comm->setup();
-    neighbor->setup_bins();
-    comm->exchange();
-    comm->borders();
-    neighbor->build(1);
-    for (auto & fix_history : fix_history_list){
-    fix_history->post_neighbor();
-    }
 
-    
-    reset_atom2body();
+  std::cout << "building topology " << std::endl;
+  neighbor->build_topology();
+  std::cout << "(" << update->ntimestep << ") MID: neighbor->nanglelist" << neighbor->nanglelist << ", atom->nangles: " << atom->nangles  << ",  atoms->nlocal: " <<  atom->nlocal << ",  atom->natoms: " <<  atom->natoms << std::endl;
 
-
-    areas_and_normals();
+  
+  areas_and_normals();
 
 }
 
@@ -2263,22 +2357,22 @@ void FixRigidAbrade::compute_forces_and_torques()
     tcm[2] += dx*f[i][1] - dy*f[i][0];
   }
 
-  // extended particles add their torque to torque of body
+  // // extended particles add their torque to torque of body
 
-  if (extended) {
-    double **torque = atom->torque;
+  // if (extended) {
+  //   double **torque = atom->torque;
 
-    for (i = 0; i < nlocal; i++) {
-      if (atom2body[i] < 0) continue;
+  //   for (i = 0; i < nlocal; i++) {
+  //     if (atom2body[i] < 0) continue;
 
-      if (eflags[i] & TORQUE) {
-        tcm = body[atom2body[i]].torque;
-        tcm[0] += torque[i][0];
-        tcm[1] += torque[i][1];
-        tcm[2] += torque[i][2];
-      }
-    }
-  }
+  //     if (eflags[i] & TORQUE) {
+  //       tcm = body[atom2body[i]].torque;
+  //       tcm[0] += torque[i][0];
+  //       tcm[1] += torque[i][1];
+  //       tcm[2] += torque[i][2];
+  //     }
+  //   }
+  // }
 
   // reverse communicate fcm, torque of all bodies
 
@@ -2318,8 +2412,9 @@ void FixRigidAbrade::compute_forces_and_torques()
 
 void FixRigidAbrade::final_integrate(){
   double dtfm;
-
   //check(3);
+
+  delete_atom_flag = 0;
 
   // compute forces and torques (after all post_force contributions)
   // if 2d model, enforce2d() on body forces/torques
@@ -2378,6 +2473,10 @@ void FixRigidAbrade::final_integrate(){
     global_displace_vel[2] = vertexdata[i][6];
 
 
+    // // Flagging that the body owning atom i has been abraded and has changed shape
+    // Body *b = &body[atom2body[i]];
+    // b->abraded_flag = 1;
+    // proc_abraded_flag = 1;
 
     if (!MathExtra::len3(global_displace_vel)) continue;
     
@@ -2452,8 +2551,6 @@ void FixRigidAbrade::final_integrate(){
       
         if (dynamic_flag) resetup_bodies_static(); 
         areas_and_normals();
-        
-        
     }
 
 
@@ -2467,9 +2564,87 @@ void FixRigidAbrade::final_integrate(){
     // setting all abraded_flags for owned and ghost bodies back to 0 in preparation for the following timestep
     for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody ++) body[ibody].abraded_flag = 0;
     proc_abraded_flag = 0;
+
 }
 
 /* ---------------------------------------------------------------------- */
+
+
+void FixRigidAbrade::end_of_step(){
+    if (total_dlist.size()){
+    
+  int nlocal = atom->nlocal;
+
+  // delete local atoms that have remove_tag
+  // reset nlocal
+
+  AtomVec *avec = atom->avec;
+
+  int i = 0;
+  while (i < nlocal) {
+    if (count(total_dlist.begin(), total_dlist.end(), atom->tag[i])) {
+      std::cout << "removing atom " << atom->tag[i] << std::endl;
+      avec->copy(nlocal - 1, i, 1);
+      nlocal--;
+
+      // also decrement the number of atoms in the body
+      // TODO: Forward Communicate this
+
+      // body[atom2body[i]].natoms--;
+    } else
+      i++;
+  } std::cout << "Removed: " << total_dlist.size() << " atoms" << std::endl;
+
+  atom->nlocal = nlocal;
+
+  // reset atom->natoms and also topology counts
+  bigint nblocal = atom->nlocal;
+  MPI_Allreduce(&nblocal, &atom->natoms, 1, MPI_LMP_BIGINT, MPI_SUM, world);
+
+  // reset atom->map if it exists
+  // set nghost to 0 so old ghosts of deleted atoms won't be mapped
+
+  if (atom->map_style != Atom::MAP_NONE) {
+    atom->nghost = 0;
+    atom->map_init();
+    atom->map_set();
+  }
+
+// Although costly, the neighbor lists must be rebuilt following each remeshing as well as any histories
+// This has been limited to once on a remeshing timestep rather than for each time an atom is removed... as was previously the case.
+    
+    std::vector<Fix *> fix_history_list = modify->get_fix_by_style("NEIGH_HISTORY");
+    
+    for (auto & fix_history : fix_history_list){
+    fix_history->pre_exchange();
+    }    
+    domain->pbc();
+    domain->reset_box();
+    comm->setup();
+    neighbor->setup_bins();
+    comm->exchange();
+    comm->borders();
+    neighbor->build(1);
+    for (auto & fix_history : fix_history_list){
+    fix_history->post_neighbor();
+    }
+
+    
+    reset_atom2body();
+    areas_and_normals();
+
+    dlist.clear();
+    total_dlist.clear();
+    
+    std::cout << "(" << update->ntimestep << ") POST: neighbor->nanglelist" << neighbor->nanglelist << ", atom->nangles: " << atom->nangles  << ",  atoms->nlocal: " <<  atom->nlocal << ",  atom->natoms: " <<  atom->natoms << std::endl;
+    }
+
+}
+
+
+/* ---------------------------------------------------------------------- */
+
+
 
 void FixRigidAbrade::initial_integrate_respa(int vflag, int ilevel, int /*iloop*/)
 {
@@ -2794,69 +2969,69 @@ void FixRigidAbrade::set_xv()
     b->xgc[2] += b->xcm[2];
   }
 
-  // set orientation, omega, angmom of each extended particle
+  // // set orientation, omega, angmom of each extended particle
 
-  if (extended) {
-    double theta_body,theta;
-    double *shape,*quatatom,*inertiaatom;
+  // if (extended) {
+  //   double theta_body,theta;
+  //   double *shape,*quatatom,*inertiaatom;
 
-    AtomVecEllipsoid::Bonus *ebonus;
-    if (avec_ellipsoid) ebonus = avec_ellipsoid->bonus;
-    AtomVecLine::Bonus *lbonus;
-    if (avec_line) lbonus = avec_line->bonus;
-    AtomVecTri::Bonus *tbonus;
-    if (avec_tri) tbonus = avec_tri->bonus;
-    double **omega = atom->omega;
-    double **angmom = atom->angmom;
-    double **mu = atom->mu;
-    int *ellipsoid = atom->ellipsoid;
-    int *line = atom->line;
-    int *tri = atom->tri;
+  //   AtomVecEllipsoid::Bonus *ebonus;
+  //   if (avec_ellipsoid) ebonus = avec_ellipsoid->bonus;
+  //   AtomVecLine::Bonus *lbonus;
+  //   if (avec_line) lbonus = avec_line->bonus;
+  //   AtomVecTri::Bonus *tbonus;
+  //   if (avec_tri) tbonus = avec_tri->bonus;
+  //   double **omega = atom->omega;
+  //   double **angmom = atom->angmom;
+  //   double **mu = atom->mu;
+  //   int *ellipsoid = atom->ellipsoid;
+  //   int *line = atom->line;
+  //   int *tri = atom->tri;
 
-    for (int i = 0; i < nlocal; i++) {
-      if (atom2body[i] < 0) continue;
-      Body *b = &body[atom2body[i]];
+  //   for (int i = 0; i < nlocal; i++) {
+  //     if (atom2body[i] < 0) continue;
+  //     Body *b = &body[atom2body[i]];
 
-      if (eflags[i] & SPHERE) {
-        omega[i][0] = b->omega[0];
-        omega[i][1] = b->omega[1];
-        omega[i][2] = b->omega[2];
-      } else if (eflags[i] & ELLIPSOID) {
-        shape = ebonus[ellipsoid[i]].shape;
-        quatatom = ebonus[ellipsoid[i]].quat;
-        MathExtra::quatquat(b->quat,orient[i],quatatom);
-        MathExtra::qnormalize(quatatom);
-        ione[0] = EINERTIA*rmass[i] * (shape[1]*shape[1] + shape[2]*shape[2]);
-        ione[1] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[2]*shape[2]);
-        ione[2] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[1]*shape[1]);
-        MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
-        MathExtra::omega_to_angmom(b->omega,exone,eyone,ezone,ione,angmom[i]);
-      } else if (eflags[i] & LINE) {
-        if (b->quat[3] >= 0.0) theta_body = 2.0*acos(b->quat[0]);
-        else theta_body = -2.0*acos(b->quat[0]);
-        theta = orient[i][0] + theta_body;
-        while (theta <= -MY_PI) theta += MY_2PI;
-        while (theta > MY_PI) theta -= MY_2PI;
-        lbonus[line[i]].theta = theta;
-        omega[i][0] = b->omega[0];
-        omega[i][1] = b->omega[1];
-        omega[i][2] = b->omega[2];
-      } else if (eflags[i] & TRIANGLE) {
-        inertiaatom = tbonus[tri[i]].inertia;
-        quatatom = tbonus[tri[i]].quat;
-        MathExtra::quatquat(b->quat,orient[i],quatatom);
-        MathExtra::qnormalize(quatatom);
-        MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
-        MathExtra::omega_to_angmom(b->omega,exone,eyone,ezone,
-                                   inertiaatom,angmom[i]);
-      }
-      if (eflags[i] & DIPOLE) {
-        MathExtra::quat_to_mat(b->quat,p);
-        MathExtra::matvec(p,dorient[i],mu[i]);
-        MathExtra::snormalize3(mu[i][3],mu[i],mu[i]);
-      }
-    }
-  }
+  //     if (eflags[i] & SPHERE) {
+  //       omega[i][0] = b->omega[0];
+  //       omega[i][1] = b->omega[1];
+  //       omega[i][2] = b->omega[2];
+  //     } else if (eflags[i] & ELLIPSOID) {
+  //       shape = ebonus[ellipsoid[i]].shape;
+  //       quatatom = ebonus[ellipsoid[i]].quat;
+  //       MathExtra::quatquat(b->quat,orient[i],quatatom);
+  //       MathExtra::qnormalize(quatatom);
+  //       ione[0] = EINERTIA*rmass[i] * (shape[1]*shape[1] + shape[2]*shape[2]);
+  //       ione[1] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[2]*shape[2]);
+  //       ione[2] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[1]*shape[1]);
+  //       MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
+  //       MathExtra::omega_to_angmom(b->omega,exone,eyone,ezone,ione,angmom[i]);
+  //     } else if (eflags[i] & LINE) {
+  //       if (b->quat[3] >= 0.0) theta_body = 2.0*acos(b->quat[0]);
+  //       else theta_body = -2.0*acos(b->quat[0]);
+  //       theta = orient[i][0] + theta_body;
+  //       while (theta <= -MY_PI) theta += MY_2PI;
+  //       while (theta > MY_PI) theta -= MY_2PI;
+  //       lbonus[line[i]].theta = theta;
+  //       omega[i][0] = b->omega[0];
+  //       omega[i][1] = b->omega[1];
+  //       omega[i][2] = b->omega[2];
+  //     } else if (eflags[i] & TRIANGLE) {
+  //       inertiaatom = tbonus[tri[i]].inertia;
+  //       quatatom = tbonus[tri[i]].quat;
+  //       MathExtra::quatquat(b->quat,orient[i],quatatom);
+  //       MathExtra::qnormalize(quatatom);
+  //       MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
+  //       MathExtra::omega_to_angmom(b->omega,exone,eyone,ezone,
+  //                                  inertiaatom,angmom[i]);
+  //     }
+  //     if (eflags[i] & DIPOLE) {
+  //       MathExtra::quat_to_mat(b->quat,p);
+  //       MathExtra::matvec(p,dorient[i],mu[i]);
+  //       MathExtra::snormalize3(mu[i][3],mu[i],mu[i]);
+  //     }
+  //   }
+  // }
 }
 
 /* ----------------------------------------------------------------------
@@ -2946,50 +3121,50 @@ void FixRigidAbrade::set_v()
     }
   }
 
-  // set omega, angmom of each extended particle
+  // // set omega, angmom of each extended particle
 
-  if (extended) {
-    double *shape,*quatatom,*inertiaatom;
+  // if (extended) {
+  //   double *shape,*quatatom,*inertiaatom;
 
-    AtomVecEllipsoid::Bonus *ebonus;
-    if (avec_ellipsoid) ebonus = avec_ellipsoid->bonus;
-    AtomVecTri::Bonus *tbonus;
-    if (avec_tri) tbonus = avec_tri->bonus;
-    double **omega = atom->omega;
-    double **angmom = atom->angmom;
-    int *ellipsoid = atom->ellipsoid;
-    int *tri = atom->tri;
+  //   AtomVecEllipsoid::Bonus *ebonus;
+  //   if (avec_ellipsoid) ebonus = avec_ellipsoid->bonus;
+  //   AtomVecTri::Bonus *tbonus;
+  //   if (avec_tri) tbonus = avec_tri->bonus;
+  //   double **omega = atom->omega;
+  //   double **angmom = atom->angmom;
+  //   int *ellipsoid = atom->ellipsoid;
+  //   int *tri = atom->tri;
 
-    for (int i = 0; i < nlocal; i++) {
-      if (atom2body[i] < 0) continue;
-      Body *b = &body[atom2body[i]];
+  //   for (int i = 0; i < nlocal; i++) {
+  //     if (atom2body[i] < 0) continue;
+  //     Body *b = &body[atom2body[i]];
 
-      if (eflags[i] & SPHERE) {
-        omega[i][0] = b->omega[0];
-        omega[i][1] = b->omega[1];
-        omega[i][2] = b->omega[2];
-      } else if (eflags[i] & ELLIPSOID) {
-        shape = ebonus[ellipsoid[i]].shape;
-        quatatom = ebonus[ellipsoid[i]].quat;
-        ione[0] = EINERTIA*rmass[i] * (shape[1]*shape[1] + shape[2]*shape[2]);
-        ione[1] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[2]*shape[2]);
-        ione[2] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[1]*shape[1]);
-        MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
-        MathExtra::omega_to_angmom(b->omega,exone,eyone,ezone,ione,
-                                   angmom[i]);
-      } else if (eflags[i] & LINE) {
-        omega[i][0] = b->omega[0];
-        omega[i][1] = b->omega[1];
-        omega[i][2] = b->omega[2];
-      } else if (eflags[i] & TRIANGLE) {
-        inertiaatom = tbonus[tri[i]].inertia;
-        quatatom = tbonus[tri[i]].quat;
-        MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
-        MathExtra::omega_to_angmom(b->omega,exone,eyone,ezone,
-                                   inertiaatom,angmom[i]);
-      }
-    }
-  }
+  //     if (eflags[i] & SPHERE) {
+  //       omega[i][0] = b->omega[0];
+  //       omega[i][1] = b->omega[1];
+  //       omega[i][2] = b->omega[2];
+  //     } else if (eflags[i] & ELLIPSOID) {
+  //       shape = ebonus[ellipsoid[i]].shape;
+  //       quatatom = ebonus[ellipsoid[i]].quat;
+  //       ione[0] = EINERTIA*rmass[i] * (shape[1]*shape[1] + shape[2]*shape[2]);
+  //       ione[1] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[2]*shape[2]);
+  //       ione[2] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[1]*shape[1]);
+  //       MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
+  //       MathExtra::omega_to_angmom(b->omega,exone,eyone,ezone,ione,
+  //                                  angmom[i]);
+  //     } else if (eflags[i] & LINE) {
+  //       omega[i][0] = b->omega[0];
+  //       omega[i][1] = b->omega[1];
+  //       omega[i][2] = b->omega[2];
+  //     } else if (eflags[i] & TRIANGLE) {
+  //       inertiaatom = tbonus[tri[i]].inertia;
+  //       quatatom = tbonus[tri[i]].quat;
+  //       MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
+  //       MathExtra::omega_to_angmom(b->omega,exone,eyone,ezone,
+  //                                  inertiaatom,angmom[i]);
+  //     }
+  //   }
+  // }
 }
 
 /* ----------------------------------------------------------------------
@@ -3229,11 +3404,15 @@ int FixRigidAbrade::rendezvous_body(int n, char *inbuf,
    may read some properties from inpfile
 ------------------------------------------------------------------------- */
 
-void FixRigidAbrade::setup_bodies_static()
-{
-  std::cout << "*****************------------------ LOCAL: Setting up bodies static -------------------*****************" << std::endl;
+void FixRigidAbrade::setup_bodies_static(){
+    std::cout << " -------------------- CALLING SETUPBODIES STATIC --------------------" << std::endl;
+  // std::cout << "*****************------------------ LOCAL: Setting up bodies static -------------------*****************" << std::endl;
   int i,ibody;
 
+
+  for (ibody = 0; ibody < nlocal_body; ibody++) {
+    std::cout << "body: " << ibody << " vcm: (" << body[ibody].vcm[0] << ", " << body[ibody].vcm[1] << ", " << body[ibody].vcm[2] << ")   acm (" <<  body[ibody].angmom[0] << ", " << body[ibody].angmom[1] << ", " << body[ibody].angmom[2] << ")" << std::endl;
+  }
   // extended = 1 if any particle in a rigid body is finite size
   //              or has a dipole moment
 
@@ -3366,6 +3545,8 @@ void FixRigidAbrade::setup_bodies_static()
 
     // Initally setting all bodies to have been abraded at t = 0 so that they are correctly processed during setup_bodies_static
     body[ibody].abraded_flag = 1;
+    body[ibody].body_remesh_flag = 0;
+    body[ibody].old_STD_area = 100000.0;
   }
     proc_abraded_flag = 1;
 
@@ -3375,7 +3556,8 @@ void FixRigidAbrade::setup_bodies_static()
   // Additionally, we set increment the number of atoms in their respective body
   for (i = 0; i < nlocal; i++){
     if (atom2body[i] < 0) continue;
-    
+    // Zeroing the mass of each atom. Will be assigned when rechecking the inertia about the body cordinates
+    rmass[i] = 0.0;
     // Calculated unwrapped coords for all atoms in bodies
     domain->unmap(x[i],xcmimage[i],unwrap[i]);  
 
@@ -3460,14 +3642,6 @@ void FixRigidAbrade::setup_bodies_static()
   commflag = MASS_NATOMS;
   comm->forward_comm(this,2);
 
-  // Cycling through the local atoms and setting their mass to the respective (body mass/natoms) (therefore total mass of consituent atoms sums to the body mass)
-  for (i = 0; i < nlocal; i++) {
-
-    if (atom2body[i] < 0) continue;
-    Body *b = &body[atom2body[i]];
-    rmass[i] = b->mass / b->natoms; 
-  }
-
   // set vcm, angmom = 0.0 in case inpfile is used
   // and doesn't overwrite all body's values
   // since setup_bodies_dynamic() will not be called
@@ -3527,7 +3701,7 @@ void FixRigidAbrade::setup_bodies_static()
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
 
-      // literature reference
+      // literature reference: https://doi.org/10.3844/jmssp.2005.8.11
       inertia = itensor[atom2body[anglelist[n][0]]];
       inertia[0] += (((unwrap[i2][1]-unwrap[i1][1])*(unwrap[i3][2]-unwrap[i1][2])) - ((unwrap[i3][1]-unwrap[i1][1])*(unwrap[i2][2]-unwrap[i1][2]))) *(unwrap[i1][0]*(unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*(((unwrap[i1][0]*unwrap[i1][0])+unwrap[i2][0]*(unwrap[i1][0]+unwrap[i2][0]))+unwrap[i3][0]*((unwrap[i1][0]+unwrap[i2][0]) + unwrap[i3][0])));
       inertia[1] += (((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][2]-unwrap[i1][2])) - ((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][2]-unwrap[i1][2]))) *(unwrap[i1][1]*(unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*(((unwrap[i1][1]*unwrap[i1][1])+unwrap[i2][1]*(unwrap[i1][1]+unwrap[i2][1]))+unwrap[i3][1]*((unwrap[i1][1]+unwrap[i2][1]) + unwrap[i3][1])));
@@ -3741,6 +3915,7 @@ void FixRigidAbrade::setup_bodies_static()
   for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++)
     for (i = 0; i < 6; i++) itensor[ibody][i] = 0.0;
 
+  double tetra_volume;
   for (int n = 0; n < nanglelist; n++) {
     if (atom2body[anglelist[n][0]] < 0) continue;
     
@@ -3756,6 +3931,13 @@ void FixRigidAbrade::setup_bodies_static()
     inertia[3] -= body[atom2body[anglelist[n][0]]].density * ((((((displace[i2][1]-displace[i1][1])*(displace[i3][2]-displace[i1][2])) - ((displace[i3][1]-displace[i1][1])*(displace[i2][2]-displace[i1][2]))) * (displace[i1][1]*((((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*((displace[i1][0]+displace[i2][0]) + displace[i3][0]))+displace[i1][0]*(((displace[i1][0]+displace[i2][0]) + displace[i3][0])+displace[i1][0]))+displace[i2][1]*((((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*((displace[i1][0]+displace[i2][0]) + displace[i3][0]))+displace[i2][0]*(((displace[i1][0]+displace[i2][0]) + displace[i3][0])+displace[i2][0]))+displace[i3][1]*((((displace[i1][0]*displace[i1][0])+displace[i2][0]*(displace[i1][0]+displace[i2][0]))+displace[i3][0]*((displace[i1][0]+displace[i2][0]) + displace[i3][0]))+displace[i3][0]*(((displace[i1][0]+displace[i2][0]) + displace[i3][0])+displace[i3][0]))))/120.0));
     inertia[4] -= body[atom2body[anglelist[n][0]]].density * ((((((displace[i3][0]-displace[i1][0])*(displace[i2][2]-displace[i1][2])) - ((displace[i2][0]-displace[i1][0])*(displace[i3][2]-displace[i1][2]))) * (displace[i1][2]*((((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*((displace[i1][1]+displace[i2][1]) + displace[i3][1]))+displace[i1][1]*(((displace[i1][1]+displace[i2][1]) + displace[i3][1])+displace[i1][1]))+displace[i2][2]*((((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*((displace[i1][1]+displace[i2][1]) + displace[i3][1]))+displace[i2][1]*(((displace[i1][1]+displace[i2][1]) + displace[i3][1])+displace[i2][1]))+displace[i3][2]*((((displace[i1][1]*displace[i1][1])+displace[i2][1]*(displace[i1][1]+displace[i2][1]))+displace[i3][1]*((displace[i1][1]+displace[i2][1]) + displace[i3][1]))+displace[i3][1]*(((displace[i1][1]+displace[i2][1]) + displace[i3][1])+displace[i3][1]))))/120.0));  
     inertia[5] -= body[atom2body[anglelist[n][0]]].density * ((((((displace[i2][0]-displace[i1][0])*(displace[i3][1]-displace[i1][1])) - ((displace[i3][0]-displace[i1][0])*(displace[i2][1]-displace[i1][1]))) * (displace[i1][0]*((((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))+displace[i1][2]*(((displace[i1][2]+displace[i2][2]) + displace[i3][2])+displace[i1][2]))+displace[i2][0]*((((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))+displace[i2][2]*(((displace[i1][2]+displace[i2][2]) + displace[i3][2])+displace[i2][2]))+displace[i3][0]*((((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))+displace[i3][2]*(((displace[i1][2]+displace[i2][2]) + displace[i3][2])+displace[i3][2]))))/120.0));
+
+
+    tetra_volume = ((((displace[i2][1]-displace[i1][1])*(displace[i3][2]-displace[i1][2])) - ((displace[i3][1]-displace[i1][1])*(displace[i2][2]-displace[i1][2]))) *((displace[i1][0]+displace[i2][0]) + displace[i3][0]))/6.0;
+    rmass[i1] += (tetra_volume/3.0)*density;
+    rmass[i2] += (tetra_volume/3.0)*density;
+    rmass[i3] += (tetra_volume/3.0)*density;
+
   }
 
   // if (extended) {
@@ -3870,6 +4052,7 @@ void FixRigidAbrade::setup_bodies_static()
 
 void FixRigidAbrade::resetup_bodies_static()
 {
+  std::cout << " -------------------- CALLING RE-SETUPBODIES STATIC --------------------" << std::endl;
   int i,ibody;
   int nlocal = atom->nlocal;
 
@@ -4140,7 +4323,7 @@ void FixRigidAbrade::resetup_bodies_static()
   commflag = INITIAL;
   comm->forward_comm(this,29);
 
-  // // ---------------------------------------------------- PRINTING ---------------------------------------------------
+  // // // ---------------------------------------------------- PRINTING ---------------------------------------------------
   // std::cout << me << ": nlocalbodies = " << nlocal_body << std::endl;
   // if (nlocal_body > 0){
   //   for (ibody = 0; ibody < nlocal_body; ibody++) {
@@ -4305,6 +4488,7 @@ void FixRigidAbrade::resetup_bodies_static()
 
 void FixRigidAbrade::setup_bodies_dynamic()
 {
+  std::cout << " -------------------- CALLING SETUPBODIES DYNAMIC --------------------" << std::endl;
   int i,ibody;
   double massone,radone;
 
@@ -4312,16 +4496,11 @@ void FixRigidAbrade::setup_bodies_dynamic()
   // vcm = velocity of COM
   // angmom = angular momentum around COM
 
-  double **x = atom->x;
+
   double **v = atom->v;
-  double *rmass = atom->rmass;
-  double *mass = atom->mass;
-  int *type = atom->type;
-  int nlocal = atom->nlocal;
-
   double *xcm,*vcm,*acm;
-  double dx,dy,dz;
 
+  // Zeroing body properties
   for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++) {
     vcm = body[ibody].vcm;
     vcm[0] = vcm[1] = vcm[2] = 0.0;
@@ -4329,77 +4508,143 @@ void FixRigidAbrade::setup_bodies_dynamic()
     acm[0] = acm[1] = acm[2] = 0.0;
   }
 
-  for (i = 0; i < nlocal; i++) {
-    if (atom2body[i] < 0) continue;
-    Body *b = &body[atom2body[i]];
+  // Cycling through angle list to consider the tetrahedra constructed about the COM
+  int **anglelist = neighbor->anglelist;
+  int nanglelist = neighbor->nanglelist;
+  double dx1, dx2, dx3, dy1, dy2, dy3, dz1, dz2, dz3, dx4, dy4, dz4;
+  double J[3][3];
+  double det_J;
+  double v_centroid[3];
+  double omega_centroid[3];
+  double tetra_volume;
+  double tetra_mass;
+  double Ixx, Iyy, Izz, Iyz, Ixz, Ixy;
+  double tetra_tensor[3][3];
+  double r_centroid[3];
+  double r_len;
 
-    if (rmass) massone = rmass[i];
-    else massone = mass[type[i]];
 
-    vcm = b->vcm;
-    vcm[0] += v[i][0] * massone;
-    vcm[1] += v[i][1] * massone;
-    vcm[2] += v[i][2] * massone;
+    for (int n = 0; n < nanglelist; n++) {
+      if (atom2body[anglelist[n][0]] < 0) continue;
+      Body *b = &body[atom2body[anglelist[n][0]]];
 
-    // domain->unmap(x[i],xcmimage[i],unwrap[i]);
-    xcm = b->xcm;
-    dx = unwrap[i][0] - xcm[0];
-    dy = unwrap[i][1] - xcm[1];
-    dz = unwrap[i][2] - xcm[2];
+      // Storing the three atoms in each angle
+      int i1 = anglelist[n][0];
+      int i2 = anglelist[n][1];
+      int i3 = anglelist[n][2];
 
-    acm = b->angmom;
-    acm[0] += dy * massone*v[i][2] - dz * massone*v[i][1];
-    acm[1] += dz * massone*v[i][0] - dx * massone*v[i][2];
-    acm[2] += dx * massone*v[i][1] - dy * massone*v[i][0];
-  }
-
-  // extended particles add their rotation to angmom of body
-
-  if (extended) {
-    AtomVecLine::Bonus *lbonus;
-    if (avec_line) lbonus = avec_line->bonus;
-    double **omega = atom->omega;
-    double **angmom = atom->angmom;
-    double *radius = atom->radius;
-    int *line = atom->line;
-
-    for (i = 0; i < nlocal; i++) {
-      if (atom2body[i] < 0) continue;
-      Body *b = &body[atom2body[i]];
-
-      if (eflags[i] & OMEGA) {
-        if (eflags[i] & SPHERE) {
-          radone = radius[i];
-          acm = b->angmom;
-          acm[0] += SINERTIA*rmass[i] * radone*radone * omega[i][0];
-          acm[1] += SINERTIA*rmass[i] * radone*radone * omega[i][1];
-          acm[2] += SINERTIA*rmass[i] * radone*radone * omega[i][2];
-        } else if (eflags[i] & LINE) {
-          radone = lbonus[line[i]].length;
-          b->angmom[2] += LINERTIA*rmass[i] * radone*radone * omega[i][2];
-        }
-      }
-      if (eflags[i] & ANGMOM) {
-        acm = b->angmom;
-        acm[0] += angmom[i][0];
-        acm[1] += angmom[i][1];
-        acm[2] += angmom[i][2];
-      }
+      // Offsetting the atom positions about the bodies' COM
+      xcm = b->xcm;  
+      dx1 = unwrap[i1][0] - xcm[0]; dy1 = unwrap[i1][1] - xcm[1]; dz1 = unwrap[i1][2] - xcm[2]; // i1 position
+      dx2 = unwrap[i2][0] - xcm[0]; dy2 = unwrap[i2][1] - xcm[1]; dz2 = unwrap[i2][2] - xcm[2]; // i2 position
+      dx3 = unwrap[i3][0] - xcm[0]; dy3 = unwrap[i3][1] - xcm[1]; dz3 = unwrap[i3][2] - xcm[2]; // i3 position
+      dx4 = 0.0; dy4 = 0.0; dz4 = 0.0; // COM position (0.0, 0.0, 0.0)
+      
+      // Calculating the determinat of the offset coordinates (equals 6*volume of the tetrahedra)
+      J[0][0] = dx2 - dx1; J[0][1] = dx3 - dx1; J[0][2] = dx4 - dx1;
+      J[1][0] = dy2 - dy1; J[1][1] = dy3 - dy1; J[1][2] = dy4 - dy1;
+      J[2][0] = dz2 - dz1; J[2][1] = dz3 - dz1; J[2][2] = dz4 - dz1;
+      det_J = MathExtra::det3(J);
+      
+      tetra_volume = abs((det_J/6.0));
+      tetra_mass = b->density * tetra_volume;
+     
+      v_centroid[0] = ((v[i1][0] + v[i2][0] + v[i3][0]) / 3.0);
+      v_centroid[1] = ((v[i1][1] + v[i2][1] + v[i3][1]) / 3.0);
+      v_centroid[2] = ((v[i1][2] + v[i2][2] + v[i3][2]) / 3.0);
+      
+      vcm = b->vcm;
+      vcm[0] += tetra_mass * v_centroid[0] * dynamic_flag;
+      vcm[1] += tetra_mass * v_centroid[1] * dynamic_flag;
+      vcm[2] += tetra_mass * v_centroid[2] * dynamic_flag;
     }
-  }
 
-  // reverse communicate vcm, angmom of all bodies
+  // reverse communicate vcm of all bodies 
 
-  commflag = VCM_ANGMOM;
-  comm->reverse_comm(this,6);
+  commflag = VCM;
+  comm->reverse_comm(this,3);
 
   // normalize velocity of COM
-
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     vcm = body[ibody].vcm;
     vcm[0] /= body[ibody].mass;
     vcm[1] /= body[ibody].mass;
     vcm[2] /= body[ibody].mass;
+  }
+
+    // reverse communicate angmom of all bodies
+    commflag = ANGMOM;
+    comm->reverse_comm(this,3);
+
+      // Setting angular momentum - working wholly in the global coordinate space
+    for (int n = 0; n < nanglelist; n++) {
+      if (atom2body[anglelist[n][0]] < 0) continue;
+      Body *b = &body[atom2body[anglelist[n][0]]];
+
+      // Storing the three atoms in each angle
+      int i1 = anglelist[n][0];
+      int i2 = anglelist[n][1];
+      int i3 = anglelist[n][2];
+
+      // Offsetting the atom positions about the bodies' COM
+      xcm = b->xcm;  
+      dx1 = unwrap[i1][0] - xcm[0]; dy1 = unwrap[i1][1] - xcm[1]; dz1 = unwrap[i1][2] - xcm[2]; // i1 position
+      dx2 = unwrap[i2][0] - xcm[0]; dy2 = unwrap[i2][1] - xcm[1]; dz2 = unwrap[i2][2] - xcm[2]; // i2 position
+      dx3 = unwrap[i3][0] - xcm[0]; dy3 = unwrap[i3][1] - xcm[1]; dz3 = unwrap[i3][2] - xcm[2]; // i3 position
+      dx4 = 0.0; dy4 = 0.0; dz4 = 0.0; // COM position (0.0, 0.0, 0.0)
+      
+      // Calculating the determinat of the offset coordinates (equals 6*volume of the tetrahedra)
+      J[0][0] = dx2 - dx1; J[0][1] = dx3 - dx1; J[0][2] = dx4 - dx1;
+      J[1][0] = dy2 - dy1; J[1][1] = dy3 - dy1; J[1][2] = dy4 - dy1;
+      J[2][0] = dz2 - dz1; J[2][1] = dz3 - dz1; J[2][2] = dz4 - dz1;
+      det_J = MathExtra::det3(J);
+    
+
+      Ixx = b->density * abs(det_J) * (dy1*dy1 + dy1*dy2 + dy2*dy2 + dy1*dy3 + dy2*dy3 + dy3*dy3 + dz1*dz1 + dz1*dz2 + dz2*dz2 + dz1*dz3 + dz2*dz3 + dz3*dz3) / 60.0;
+      Iyy = b->density * abs(det_J) * (dx1*dx1 + dx1*dx2 + dx2*dx2 + dx1*dx3 + dx2*dx3 + dx3*dx3 + dz1*dz1 + dz1*dz2 + dz2*dz2 + dz1*dz3 + dz2*dz3 + dz3*dz3) / 60.0;
+      Izz = b->density * abs(det_J) * (dx1*dx1 + dx1*dx2 + dx2*dx2 + dx1*dx3 + dx2*dx3 + dx3*dx3 + dy1*dy1 + dy1*dy2 + dy2*dy2 + dy1*dy3 + dy2*dy3 + dy3*dy3) / 60.0;
+    
+      Iyz =  -b->density * abs(det_J) * (2*dy1*dz1 + dy2*dz1 + dy3*dz1 + dy1*dz2 + 2*dy2*dz2 + dy3*dz2 + dy1*dz3 + dy2*dz3 + 2*dy3*dz3) / 120.0;
+      Ixz =  -b->density * abs(det_J) * (2*dx1*dz1 + dx2*dz1 + dx3*dz1 + dx1*dz2 + 2*dx2*dz2 + dx3*dz2 + dx1*dz3 + dx2*dz3 + 2*dx3*dz3) / 120.0;
+      Ixy =  -b->density * abs(det_J) * (2*dx1*dy1 + dx2*dy1 + dx3*dy1 + dx1*dy2 + 2*dx2*dy2 + dx3*dy2 + dx1*dy3 + dx2*dy3 + 2*dx3*dy3) / 120.0;
+
+      tetra_tensor[0][0] = Ixx;
+      tetra_tensor[1][1] = Iyy;
+      tetra_tensor[2][2] = Izz;
+      tetra_tensor[0][1] = tetra_tensor[1][0] = Ixy;
+      tetra_tensor[0][2] = tetra_tensor[2][0] = Ixz;
+      tetra_tensor[1][2] = tetra_tensor[2][1] = Iyz;
+
+      // Converting from a linear velocity to an orbital angular velocity about the COM (r x v)/ |r||r|
+      vcm = b->vcm;
+      v_centroid[0] = (((v[i1][0] + v[i2][0] + v[i3][0]) / 3.0) - vcm[0]);
+      v_centroid[1] = (((v[i1][1] + v[i2][1] + v[i3][1]) / 3.0) - vcm[1]);
+      v_centroid[2] = (((v[i1][2] + v[i2][2] + v[i3][2]) / 3.0) - vcm[2]);
+
+      r_centroid[0] = (dx1 + dx2 + dx3)/3.0;
+      r_centroid[1] = (dy1 + dy2 + dy3)/3.0;
+      r_centroid[2] = (dz1 + dz2 + dz3)/3.0;
+      r_len = MathExtra::len3(r_centroid);
+
+      MathExtra::cross3(r_centroid, v_centroid, omega_centroid);
+      omega_centroid[0] = omega_centroid[0] / (r_len * r_len);
+      omega_centroid[1] = omega_centroid[1] / (r_len * r_len);
+      omega_centroid[2] = omega_centroid[2] / (r_len * r_len);
+
+      acm = b->angmom;
+      acm[0] += ((tetra_tensor[0][0] * omega_centroid[0]) + (tetra_tensor[0][1] * omega_centroid[1]) + (tetra_tensor[0][2] * omega_centroid[2])) * dynamic_flag;
+      acm[1] += ((tetra_tensor[1][0] * omega_centroid[0]) + (tetra_tensor[1][1] * omega_centroid[1]) + (tetra_tensor[1][2] * omega_centroid[2])) * dynamic_flag;
+      acm[2] += ((tetra_tensor[2][0] * omega_centroid[0]) + (tetra_tensor[2][1] * omega_centroid[1]) + (tetra_tensor[2][2] * omega_centroid[2])) * dynamic_flag;
+    }
+
+    // reverse communicate angmom of all bodies
+    commflag = ANGMOM;
+    comm->reverse_comm(this,3);
+
+    for (ibody = 0; ibody < nlocal_body; ibody++) {
+    vcm = body[ibody].vcm;
+    acm = body[ibody].angmom;
+    std::cout << "body: " << ibody << " vcm: (" << vcm[0] << ", " << vcm[1] << ", " << vcm[2] << ")   acm (" <<  acm[0] << ", " << acm[1] << ", " << acm[2] << ")" << std::endl;
   }
 }
 
@@ -5320,20 +5565,25 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
       buf[m++] = torque[2];
     }
 
-  } else if (commflag == VCM_ANGMOM) {
+  } else if (commflag == VCM) {
     for (i = first; i < last; i++) {
       if (bodyown[i] < 0) continue;
       vcm = body[bodyown[i]].vcm;
       buf[m++] = vcm[0];
       buf[m++] = vcm[1];
       buf[m++] = vcm[2];
+    }
+
+  } else if (commflag == ANGMOM) {
+    for (i = first; i < last; i++) {
+      if (bodyown[i] < 0) continue;
       angmom = body[bodyown[i]].angmom;
       buf[m++] = angmom[0];
       buf[m++] = angmom[1];
       buf[m++] = angmom[2];
     }
 
-  } else if (commflag == XCM_MASS) {
+  }else if (commflag == XCM_MASS) {
     for (i = first; i < last; i++) {
 
       // Only communicating properties relevant to bodies which have abraded and changed shape
@@ -5428,7 +5678,7 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
       torque[2] += buf[m++];
     }
 
-  } else if (commflag == VCM_ANGMOM) {
+  } else if (commflag == VCM) {
     for (i = 0; i < n; i++) {
       j = list[i];
       if (bodyown[j] < 0) continue;
@@ -5436,6 +5686,12 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
       vcm[0] += buf[m++];
       vcm[1] += buf[m++];
       vcm[2] += buf[m++];
+    }
+
+  } else if (commflag == ANGMOM) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      if (bodyown[j] < 0) continue;
       angmom = body[bodyown[j]].angmom;
       angmom[0] += buf[m++];
       angmom[1] += buf[m++];
