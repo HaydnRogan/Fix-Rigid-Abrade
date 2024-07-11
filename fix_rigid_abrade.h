@@ -90,8 +90,12 @@ private:
   void remesh(std::vector<int>);
   
   std::vector<int> dlist;
+  std::vector<int> debug_edges;
   std::vector<int> total_dlist;
-
+  std::vector<std::vector<tagint>> boundaries;
+  std::vector<std::vector<std::vector<tagint>>> edges;
+   std::vector<std::vector<std::vector<int>>> new_angles_list;
+  
   int delete_atom_flag;
 
   bigint lastcheck;
@@ -108,7 +112,10 @@ private:
   bool proc_abraded_flag; // A flag which marks if any owned or ghost atoms on a processor have been abraded
 
   // Modified Commflags
-  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM, ANGMOM, XCM_MASS, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG, PROC_ABRADED_FLAG, OWNING_ATOMS};
+  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM, ANGMOM, XCM_MASS, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG, PROC_ABRADED_FLAG, OWNING_ATOMS, MIN_AREA, EDGES, NEW_ANGLES};
+
+
+  int debug_remesh; // TODO: REMOVE THIS
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
