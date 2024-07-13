@@ -94,7 +94,10 @@ private:
   std::vector<int> total_dlist;
   std::vector<std::vector<tagint>> boundaries;
   std::vector<std::vector<std::vector<tagint>>> edges;
-   std::vector<std::vector<std::vector<int>>> new_angles_list;
+  std::vector<std::vector<std::vector<int>>> new_angles_list;
+  int remesh_nangles_change;
+  int proc_remesh_flag;
+
   
   int delete_atom_flag;
 
