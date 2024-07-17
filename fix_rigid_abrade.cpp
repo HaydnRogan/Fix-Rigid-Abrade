@@ -1313,7 +1313,7 @@ void FixRigidAbrade::areas_and_normals() {
     i2 = anglelist[n][1];
     i3 = anglelist[n][2];
 
-    // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing)
+    // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
     if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
 
     // Only processing properties relevant to bodies which have abraded and changed shape
@@ -2487,7 +2487,7 @@ for (int a = 0; a < (new_angles_list[dlist_i].size()); a++){
     i2 = neighbor->anglelist[n][1];
     i3 = neighbor->anglelist[n][2];
 
-    // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing)
+    // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
     if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
 
     // Only processing properties relevant to bodies which have abraded and changed shape
@@ -2500,8 +2500,11 @@ for (int a = 0; a < (new_angles_list[dlist_i].size()); a++){
   std::cout << me << ": ( t=" << update->ntimestep << ") MID: neighbor->nanglelist" << neighbor->nanglelist << ", atom->nangles: " << atom->nangles  << ",  atoms->nlocal: " <<  atom->nlocal << ",  atom->natoms: " <<  atom->natoms << std::endl;
 
 
-  // // TODO: REMOVE THIS CALL OF RESETUP_BODIES_STATIC()
-  resetup_bodies_static();
+  // TODO: REMOVE THIS CALL OF RESETUP_BODIES_STATIC()
+  // Shouldn't need to call this to recalculate displace[i] - as previously required - since we're not actually altering the number of atoms until end_of_step()
+  // resetup_bodies_static();
+
+  
   areas_and_normals();
 
 }
@@ -3866,7 +3869,7 @@ void FixRigidAbrade::setup_bodies_static(){
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
 
-      // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing)
+      // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
       if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
       
       Body *b = &body[atom2body[anglelist[n][0]]];
@@ -3983,7 +3986,7 @@ void FixRigidAbrade::setup_bodies_static(){
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
 
-      // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing)
+      // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
       if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
 
       Body *b = &body[atom2body[anglelist[n][0]]];
@@ -4209,7 +4212,7 @@ void FixRigidAbrade::setup_bodies_static(){
     i2 = anglelist[n][1];
     i3 = anglelist[n][2];
 
-    // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing)
+    // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
     if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
     
     inertia = itensor[atom2body[anglelist[n][0]]];
@@ -4333,7 +4336,7 @@ void FixRigidAbrade::setup_bodies_static(){
 ------------------------------------------------------------------------- */
 
 void FixRigidAbrade::resetup_bodies_static(){
-  
+
   std::cout << me << " -------------------- CALLING RE-SETUPBODIES STATIC t = " << update->ntimestep << " --------------------" << std::endl;
   int i,ibody;
   int nlocal = atom->nlocal;
@@ -4431,7 +4434,7 @@ std::cout << me << " -------------------- RE-SETUPBODIES STATIC checkpoint " << 
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
 
-      // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing)
+      // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
       if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
 
       // Only processing properties relevant to bodies which have abraded and changed shape
@@ -4522,7 +4525,7 @@ std::cout << me << " -------------------- RE-SETUPBODIES STATIC checkpoint " << 
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
 
-      // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing)
+      // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
       if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
 
 
@@ -4719,7 +4722,7 @@ std::cout << me << " -------------------- RE-SETUPBODIES STATIC checkpoint " << 
     i2 = anglelist[n][1];
     i3 = anglelist[n][2];
 
-    // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing)
+    // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
     if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
     
     // Only processing properties relevant to bodies which have abraded and changed shape
@@ -4836,7 +4839,7 @@ void FixRigidAbrade::setup_bodies_dynamic()
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
 
-      // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing)
+      // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
       if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
 
       if (atom2body[anglelist[n][0]] < 0) continue;
@@ -4893,7 +4896,7 @@ void FixRigidAbrade::setup_bodies_dynamic()
       int i2 = anglelist[n][1];
       int i3 = anglelist[n][2];
 
-      // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing)
+      // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
       if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
 
       Body *b = &body[atom2body[anglelist[n][0]]];
