@@ -1600,13 +1600,15 @@ void FixRigidAbrade::areas_and_normals() {
 
 
       
-      // // // only remeshing if the min_area_atom_tag is stored as a local or ghost atom
-      if (atom->map(body[ibody].min_area_atom_tag) < 0) continue;
-      
+
       // remeshing if the processor stores the relevent body as either local or ghost (so that resetup_bodies_static() can be sucessfully called)
+
+      // TODO: ADD a MPI_WAIT OR CHANGE WHEN AREAS_AND_NORMALS IS RUN ON SETUP
+      if (update->ntimestep == 0) continue;
 
       if (debug_remesh) {        
          if (!body[ibody].body_remesh_flag){dlist.push_back(body[ibody].min_area_atom_tag);
+                                            body_dlist.push_back(ibody);
                                             body[ibody].body_remesh_flag = 1; 
                                             std::cout << me << "  pushing back atom " << body[ibody].min_area_atom_tag << " (" << atom->map(body[ibody].min_area_atom_tag) << ")"  << std::endl;
                                             }};
@@ -1629,10 +1631,8 @@ void FixRigidAbrade::areas_and_normals() {
       //   body[ibody].abraded_flag = 0; 
       // }
     
+      }
     }
-    
-    
-  }
   }
   
   
@@ -1641,13 +1641,13 @@ void FixRigidAbrade::areas_and_normals() {
 
 
 
-std::cout << me << ": ( t=" << update->ntimestep << ") PRE: neighbor->nanglelist" << neighbor->nanglelist << ", atom->nangles: " << atom->nangles  << ",  atoms->nlocal: " <<  atom->nlocal << ",  atom->natoms: " <<  atom->natoms << std::endl;
+std::cout << me << ": ( t=" << update->ntimestep << ") PRE (areas and normals): neighbor->nanglelist" << neighbor->nanglelist << ", atom->nangles: " << atom->nangles  << ",  atoms->nlocal: " <<  atom->nlocal << ",  atom->natoms: " <<  atom->natoms << std::endl;
     
-for (int i = 0; i < (nlocal + atom->nghost); i++) {
+// for (int i = 0; i < (nlocal + atom->nghost); i++) {
 
-  if (i < nlocal) std::cout << me << FGRN("  ATOM ") << atom->tag[i] << " (" << i << ")" << std::endl;
-  if (i >= nlocal) std::cout << me << FRED("   ATOM ") << atom->tag[i] << " (" << i << ")" << std::endl;
-}
+//   if (i < nlocal) std::cout << me << FGRN("  ATOM ") << atom->tag[i] << " (" << i << ")" << std::endl;
+//   if (i >= nlocal) std::cout << me << FRED("   ATOM ") << atom->tag[i] << " (" << i << ")" << std::endl;
+// }
 
 
 std::cout << me <<  " dlist: ";
@@ -1922,8 +1922,6 @@ void FixRigidAbrade::remesh(std::vector<int> dlist){
 
   std::cout << me << ": Attempting to remesh atom " << remove_tag << " ("<< atom->map(remove_tag) <<")" << std::endl;
 
-  // Only attempt to remesh if the atom is a part of a body
-  if (atom2body[atom->map(remove_tag)] < 0) error->all(FLERR,"Fix Rigid/Abrade has attempted to remesh an atom that does not belong to a rigid body.");;
 
   // initiate vector to hold the boundaries, edges, and new angles for each atom in dlist(intiated now to preserve indexing)
   boundaries.push_back({});
@@ -1932,23 +1930,27 @@ void FixRigidAbrade::remesh(std::vector<int> dlist){
 
   tagint remove_id = atom->map(remove_tag);
   // decrementing the number of atoms in the owning body such that the surface density threshold can be correctly calulcated on subsequent areas_and_normals calls.
-  body[atom2body[remove_id]].natoms--; 
+  body[body_dlist[dlist_i]].natoms--; 
   // TODO: forward comm this
 
 
   // Set abraded flag of body of removed atom so that it considered in areas_and_normals()
-  body[atom2body[remove_id]].abraded_flag = 1;
-
-  // Marking that the atom no longer belongs to a body so that it is not processed in areas_and_normals
-  // Again, this is to prevent the need to repeatedly rebuild the neighbor lists each time an atom is removed.
-  bodytag[remove_id] = 0;
-  atom2body[remove_id] = -1;
-  
+  body[body_dlist[dlist_i]].abraded_flag = 1;
 
   // storing all the atoms that have been remeshed on this timestep so that they can be deleted before the neighborlists are rebuilt.
   // This is a separate vector to dlist since multiple dlists can be remeshed on a given timestep under a single rebuilding of the neighbor lists.
   total_dlist.push_back(remove_tag);
-  
+
+
+  if (remove_id < 0) continue;
+  // Marking that the atom no longer belongs to a body so that it is not processed in areas_and_normals
+  // Again, this is to prevent the need to repeatedly rebuild the neighbor lists each time an atom is removed.
+
+  // Only attempt to remesh if the atom is a part of a body
+  if (atom2body[atom->map(remove_tag)] < 0) error->all(FLERR,"Fix Rigid/Abrade has attempted to remesh an atom that does not belong to a rigid body.");;
+
+  bodytag[remove_id] = 0;
+  atom2body[remove_id] = -1;
   }
 
   int nlocal = atom->nlocal;
@@ -1956,7 +1958,7 @@ void FixRigidAbrade::remesh(std::vector<int> dlist){
   
   debug_edges.clear();
 
-  std::cout << "Finding angles which contain atoms in dlist" << std::endl;
+  std::cout << me << ": Finding angles which contain atoms in dlist" << std::endl;
 
   // Break any angle which contains a target atom in dlist and store the type of angles used 
   int remesh_atype;
@@ -2004,7 +2006,7 @@ void FixRigidAbrade::remesh(std::vector<int> dlist){
 
   }
 
-    
+    std::cout << me << ": printing pre comm edges for proc " << me << std::endl;    
     for (int i = 0; i < (edges[0].size()); i++)
       std::cout << me << ": " << FRED("PRE") << " EDGES FOR (" << dlist[0]<< ")      " << edges[0][i][0] << " -> " << edges[0][i][1] << std::endl;
   
@@ -2019,7 +2021,7 @@ for (int dlist_j = 0; dlist_j < dlist.size(); dlist_j++){
       }
   }
 
-  // std::cout << "Constructing Boundaries" << std::endl;
+std::cout << me << ": Constructing Boundaries" << std::endl;
 
     // Constructing the boundary for each deleted atom in a CCW direction from the correspoinding edges
  
@@ -2043,7 +2045,6 @@ for (int dlist_j = 0; dlist_j < dlist.size(); dlist_j++){
           }
         }
       }
-
 
 std::cout << me <<  "Generating Angles" << std::endl;
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~ NEW ANGLE GENERATION START  ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2906,9 +2907,8 @@ void FixRigidAbrade::end_of_step(){
     areas_and_normals();
 
     dlist.clear();
+    body_dlist.clear();
     total_dlist.clear();
-    
-    
     }
 
   
@@ -4332,8 +4332,8 @@ void FixRigidAbrade::setup_bodies_static(){
    Recalculation of Abraded Bodies' COM, Volume, and Inertia
 ------------------------------------------------------------------------- */
 
-void FixRigidAbrade::resetup_bodies_static()
-{
+void FixRigidAbrade::resetup_bodies_static(){
+  
   std::cout << me << " -------------------- CALLING RE-SETUPBODIES STATIC t = " << update->ntimestep << " --------------------" << std::endl;
   int i,ibody;
   int nlocal = atom->nlocal;
