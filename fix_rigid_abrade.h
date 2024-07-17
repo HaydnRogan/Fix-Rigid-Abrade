@@ -89,6 +89,7 @@ private:
   bool angle_check(int, int, std::vector<std::vector<double>>, std::vector<std::vector<double>>, double[3]);
   void remesh(std::vector<int>);
   
+  std::vector<int> body_dlist;
   std::vector<int> dlist;
   std::vector<int> debug_edges;
   std::vector<int> total_dlist;
