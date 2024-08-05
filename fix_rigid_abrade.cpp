@@ -1305,13 +1305,19 @@ void FixRigidAbrade::areas_and_normals() {
 
   for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].body_remesh_flag = 0;
 
-  //  Storing each atom in each angle 
- for (n = 0; n < nanglelist; n++) {
+ for (n = 0; n < (nanglelist + overflow_anglelist.size()); n++) {
 
     // Storing each atom in the angle
-    i1 = anglelist[n][0];
-    i2 = anglelist[n][1];
-    i3 = anglelist[n][2];
+    if (n + 1 <= (nanglelist)){
+      i1 = anglelist[n][0];
+      i2 = anglelist[n][1];
+      i3 = anglelist[n][2];
+    } else{    
+      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step();
+      i1 = overflow_anglelist[n - nanglelist][0];
+      i2 = overflow_anglelist[n - nanglelist][1];
+      i3 = overflow_anglelist[n - nanglelist][2];
+    }
 
     // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
     if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
@@ -2007,8 +2013,9 @@ void FixRigidAbrade::remesh(std::vector<int> dlist){
   }
 
     std::cout << me << ": printing pre comm edges for proc " << me << std::endl;    
-    for (int i = 0; i < (edges[0].size()); i++)
-      std::cout << me << ": " << FRED("PRE") << " EDGES FOR (" << dlist[0]<< ")      " << edges[0][i][0] << " -> " << edges[0][i][1] << std::endl;
+    for (int edge_i = 0; edge_i < edges.size(); edge_i++)
+    for (int i = 0; i < (edges[edge_i].size()); i++)
+      std::cout << me << ": " << FRED("PRE") << " EDGES FOR (" << dlist[edge_i]<< ")      " << edges[edge_i][i][0] << " -> " << edges[edge_i][i][1] << std::endl;
   
   commflag = EDGES;
   comm->reverse_comm(this);
@@ -2016,7 +2023,7 @@ void FixRigidAbrade::remesh(std::vector<int> dlist){
 
 for (int dlist_j = 0; dlist_j < dlist.size(); dlist_j++){
     if ((atom->map(dlist[dlist_j]) > 0) && (atom->map(dlist[dlist_j]) < nlocal)){
-      for (int i = 0; i < (edges[0].size()); i++)
+      for (int i = 0; i < (edges[dlist_j].size()); i++)
       std::cout << me << ": " << FGRN("POST") << " EDGES FOR (" << dlist[dlist_j]<< ")      " << edges[dlist_j][i][0] << " -> " << edges[dlist_j][i][1] << std::endl;
       }
   }
@@ -2474,19 +2481,72 @@ for (int a = 0; a < (new_angles_list[dlist_i].size()); a++){
     // atom->nangles -= all;
     
 
-    
+
+
 
   std::cout << me << "building topology at t =  " << update->ntimestep << std::endl;
-  neighbor->build_topology();
+  
+
+
+              // -_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^
+
+             std::cout << me << BOLD(FMAG(": *             LOCAL neigh_angle->build() (appending new angles to an overflow list)         *"))  << std::endl;
+              int i, m, atom1, atom2, atom3;
+
+              nlocal = atom->nlocal;
+              int *num_angle = atom->num_angle;
+              tagint **angle_atom1 = atom->angle_atom1;
+              tagint **angle_atom2 = atom->angle_atom2;
+              tagint **angle_atom3 = atom->angle_atom3;
+              int **angle_type = atom->angle_type;
+              int newton_bond = force->newton_bond;
+
+              int nanglelist = neighbor->nanglelist;
+              int **anglelist = neighbor->anglelist;
+              int angle_count = 0;
+              overflow_anglelist.clear();
+              
+              std::cout << me <<  ":   remesh: maxangle " << nanglelist << std::endl;
+              
+              for (i = 0; i < nlocal; i++)
+                for (m = 0; m < num_angle[i]; m++) {
+                  atom1 = atom->map(angle_atom1[i][m]);
+                  atom2 = atom->map(angle_atom2[i][m]);
+                  atom3 = atom->map(angle_atom3[i][m]);
+
+                  // atom1 = domain->closest_image(i, atom1);
+                  // atom2 = domain->closest_image(i, atom2);
+                  // atom3 = domain->closest_image(i, atom3);
+
+                    if (angle_count < nanglelist) {
+                      // place angle in the existing anglelist since there is space
+                      anglelist[angle_count][0] = atom1;
+                      anglelist[angle_count][1] = atom2;
+                      anglelist[angle_count][2] = atom3;
+                      anglelist[angle_count][3] = angle_type[i][m];
+                      std::cout << me <<  ": appending angle " << (angle_count + 1) << "/" << nanglelist << " ( " << angle_atom1[i][m] << " -> " << angle_atom2[i][m] << " -> " << angle_atom3[i][m] << ")" <<  std::endl;
+                    } else {
+                      // append angle onto the overflow vector since there is no more space in anglelist
+                      overflow_anglelist.push_back({atom1, atom2, atom3, angle_type[i][m]});
+                      std::cout << me << ": appending overflow angle " << (angle_count + 1) << "/" << nanglelist << " ( " << angle_atom1[i][m] << " -> " << angle_atom2[i][m] << " -> " << angle_atom3[i][m] << ")" <<  std::endl;
+                    }
+                  
+                  angle_count++;
+                }
+
+              std::cout << me <<  ":   remesh: new nanglelist " << angle_count << "(" << neighbor->nanglelist <<  ")" << std::endl;
+              // -_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^-_._-^
+              // neighbor->build_topology();
+
 
   int i1, i2, i3, _type;
   //  Storing each atom in each angle 
- for (int n = 0; n < neighbor->nanglelist; n++) {
+ for (int n = 0; n < (neighbor->nanglelist + overflow_anglelist.size()); n++) {
     
+    if (n + 1 <= (neighbor->nanglelist)){
     i1 = neighbor->anglelist[n][0];
     i2 = neighbor->anglelist[n][1];
     i3 = neighbor->anglelist[n][2];
-
     // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
     if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
 
@@ -2494,7 +2554,28 @@ for (int a = 0; a < (new_angles_list[dlist_i].size()); a++){
     if (!body[atom2body[i1]].abraded_flag) continue;
 
     // printing each angle and the displace[i] of its atoms
-    std::cout << me << " Angle: " << atom->tag[i1] << "->" << atom->tag[i2] << "->" << atom->tag[i3] << std::endl;
+    std::cout << me << ": Angle " << (n+1)<< "/" << nanglelist << ": " << atom->tag[i1] << "->" << atom->tag[i2] << "->" << atom->tag[i3] << std::endl;
+   
+    } else{
+
+    i1 = overflow_anglelist[n - nanglelist][0];
+    i2 = overflow_anglelist[n - nanglelist][1];
+    i3 = overflow_anglelist[n - nanglelist][2];
+    
+    
+    
+
+    // // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
+    // if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
+
+    // // Only processing properties relevant to bodies which have abraded and changed shape
+    // if (!body[atom2body[i1]].abraded_flag) continue;
+
+    // printing each angle and the displace[i] of its atoms
+    std::cout << me << " OVERFLOW Angle " << (n - nanglelist + 1) << "/" << overflow_anglelist.size() << ": "<< atom->tag[i1] << "->" << atom->tag[i2] << "->" << atom->tag[i3] << std::endl;
+    
+    }
+
  }
 
   std::cout << me << ": ( t=" << update->ntimestep << ") MID: neighbor->nanglelist" << neighbor->nanglelist << ", atom->nangles: " << atom->nangles  << ",  atoms->nlocal: " <<  atom->nlocal << ",  atom->natoms: " <<  atom->natoms << std::endl;
@@ -2772,6 +2853,7 @@ void FixRigidAbrade::final_integrate(){
 void FixRigidAbrade::end_of_step(){
     
     int nlocal = atom->nlocal;
+    overflow_anglelist.clear();
 
 
     std::cout << me << FRED(" PROC REMESH FLAG ") << proc_remesh_flag << " at t = " << update->ntimestep << std::endl;
@@ -2903,7 +2985,7 @@ void FixRigidAbrade::end_of_step(){
     fix_history->post_neighbor();
     }
 
-    std::cout << me << ": ( t=" << update->ntimestep << ") POST: neighbor->nanglelist" << neighbor->nanglelist << ", atom->nangles: " << atom->nangles  << ",  atoms->nlocal: " <<  atom->nlocal << ",  atom->natoms: " <<  atom->natoms << std::endl;
+    
     
     reset_atom2body();
     resetup_bodies_static(); // TODO: REMOVE
@@ -2921,7 +3003,7 @@ void FixRigidAbrade::end_of_step(){
   MPI_Allreduce(&(neighbor->nanglelist),&nanglelistsall,1,MPI_INT,MPI_SUM,world);
   if (nanglelistsall != atom->nangles) error->all(FLERR,"Fix Rigid/Abrade: total entries in neighbor->nanglelist does not equal atom->nangles");
 
-
+  std::cout << me << ": ( t=" << update->ntimestep << ") POST: neighbor->nanglelist" << neighbor->nanglelist << ", atom->nangles: " << atom->nangles  << ",  atoms->nlocal: " <<  atom->nlocal << ",  atom->natoms: " <<  atom->natoms << std::endl;
   std::cout << me << ": Finished End of step for t = " << update->ntimestep << std::endl;
   debug_remesh = 1; // TODO: REMOVE THIS
   remesh_nangles_change = 0;
@@ -4427,12 +4509,19 @@ std::cout << me << " -------------------- RE-SETUPBODIES STATIC checkpoint " << 
 std::cout << me << " -------------------- RE-SETUPBODIES STATIC checkpoint " << FMAG("  5  ") << " at t = " << update->ntimestep << " --------------------" << std::endl;
 
   // Calculating body volume, mass and COM from constituent tetrahedra
-  for (int n = 0; n < nanglelist; n++) {
+   for (int n = 0; n < (nanglelist + overflow_anglelist.size()); n++) {
 
-      // Storing the three atoms in each angle
+    // Storing each atom in the angle
+    if (n + 1 <= (nanglelist)){
       i1 = anglelist[n][0];
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
+    } else{    
+      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step();
+      i1 = overflow_anglelist[n - nanglelist][0];
+      i2 = overflow_anglelist[n - nanglelist][1];
+      i3 = overflow_anglelist[n - nanglelist][2];
+    }
 
       // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
       if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
@@ -4518,12 +4607,19 @@ std::cout << me << " -------------------- RE-SETUPBODIES STATIC checkpoint " << 
   double dx,dy,dz;
   double *inertia;
 
-    for (int n = 0; n < nanglelist; n++) {
+  for (int n = 0; n < (nanglelist + overflow_anglelist.size()); n++) {
 
-      // Storing the three atoms in each angle
-      i1 = anglelist[n][0];
-      i2 = anglelist[n][1];
-      i3 = anglelist[n][2];
+      // Storing each atom in the angle
+      if (n + 1 <= (nanglelist)){
+        i1 = anglelist[n][0];
+        i2 = anglelist[n][1];
+        i3 = anglelist[n][2];
+      } else{    
+        // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step();
+        i1 = overflow_anglelist[n - nanglelist][0];
+        i2 = overflow_anglelist[n - nanglelist][1];
+        i3 = overflow_anglelist[n - nanglelist][2];
+      }
 
       // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
       if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
@@ -4716,11 +4812,19 @@ std::cout << me << " -------------------- RE-SETUPBODIES STATIC checkpoint " << 
     
     }
 
-  for (int n = 0; n < nanglelist; n++) {
-    
-    i1 = anglelist[n][0];
-    i2 = anglelist[n][1];
-    i3 = anglelist[n][2];
+ for (int n = 0; n < (nanglelist + overflow_anglelist.size()); n++) {
+
+    // Storing each atom in the angle
+    if (n + 1 <= (nanglelist)){
+      i1 = anglelist[n][0];
+      i2 = anglelist[n][1];
+      i3 = anglelist[n][2];
+    } else{    
+      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step();
+      i1 = overflow_anglelist[n - nanglelist][0];
+      i2 = overflow_anglelist[n - nanglelist][1];
+      i3 = overflow_anglelist[n - nanglelist][2];
+    }
 
     // Skipping the angle if any of its atoms dont belong to a body (this maybe the case if one is marked for remeshing since it is not formally removed from the atom and neighbour lists until the end_of_step)
     if (atom2body[i1] < 0 || atom2body[i2] < 0 || atom2body[i3] < 0) continue;
