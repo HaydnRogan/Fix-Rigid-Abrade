@@ -96,6 +96,7 @@ private:
   std::vector<std::vector<tagint>> boundaries;
   std::vector<std::vector<std::vector<tagint>>> edges;
   std::vector<std::vector<std::vector<int>>> new_angles_list;
+  std::vector<std::vector<int>> overflow_anglelist;
   int remesh_nangles_change;
   int proc_remesh_flag;
 
