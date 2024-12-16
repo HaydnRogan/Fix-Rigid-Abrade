@@ -28,7 +28,7 @@ FixStyle(rigid/abrade,FixRigidAbrade);
 namespace LAMMPS_NS {
 
 class FixRigidAbrade : public Fix {
-  friend class ComputeRigidLocal;
+  friend class ComputeRigidLocalAbrade;
 
  public:
   FixRigidAbrade(class LAMMPS *, int, char **);
@@ -59,6 +59,8 @@ class FixRigidAbrade : public Fix {
 
   void setup_pre_neighbor() override;
   void pre_neighbor() override;
+  void setup_post_neighbor() override;
+  // void post_neighbor() override;
   bigint dof(int) override;
   void deform(int) override;
   void reset_dt() override;
@@ -89,16 +91,24 @@ private:
   bool angle_check(int, int, std::vector<std::vector<double>>, std::vector<std::vector<double>>, double[3]);
   void remesh(std::vector<int>);
   
-  std::vector<int> body_dlist;
-  std::vector<int> dlist;
-  std::vector<int> debug_edges;
+  std::vector<int> dlist; // list of atom tags to be remeshed on a call of remesh()
+  std::vector<int> body_dlist; // list of associated body tags to be remeshed. This is required since there maybe a case where a proc does not own the dlist atom and so would be unable to access body properties
   std::vector<int> total_dlist;
+
+  // it is possible that these could be made into body properties. 
   std::vector<std::vector<tagint>> boundaries;
   std::vector<std::vector<std::vector<tagint>>> edges;
-  std::vector<std::vector<std::vector<int>>> new_angles_list;
-  std::vector<std::vector<int>> overflow_anglelist;
-  int remesh_nangles_change;
-  int proc_remesh_flag;
+  std::vector<std::vector<std::vector<tagint>>> new_angles_list;  // This may be better as a map
+  std::vector<std::vector<tagint>> overflow_anglelist;
+  std::vector<int> new_angles_type;
+
+
+  int remesh_overflow_threshold = 0;
+  int remesh_angle_proc_difference = 0;
+  int debug_remesh_once = 0;
+  int proc_remesh_flag = 0;
+  int global_remesh_flag = 0;
+  int remesh_rebuild_flag = 0;
 
   
   int delete_atom_flag;
@@ -114,13 +124,9 @@ private:
   double dtv, dtf, dtq;
   double *step_respa;
   int triclinic;
-  bool proc_abraded_flag; // A flag which marks if any owned or ghost atoms on a processor have been abraded
 
   // Modified Commflags
-  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM, ANGMOM, XCM_MASS, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG, PROC_ABRADED_FLAG, OWNING_ATOMS, MIN_AREA, EDGES, NEW_ANGLES};
-
-
-  int debug_remesh; // TODO: REMOVE THIS
+  enum{DEBUG, FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM, ANGMOM, XCM_MASS, MIN_AREA, EQUALISE, EDGES, POS_DEBUG, NEW_ANGLES, NEW_ANGLES_TYPES, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG, PROC_REMESH_FLAG, OWNING_ATOMS};
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
@@ -168,14 +174,10 @@ private:
     double omega[3];       // space-frame omega of body
     double conjqm[4];      // conjugate quaternion momentum
     int remapflag[4];      // PBC remap flags
-    bool abraded_flag;     // flag which marks that the body has abraded and changed shape
-    bool body_remesh_flag;      // flag used to limit one atom being remeshed from a given body for each call of remesh() 
+    int abraded_flag;     // flag which marks that the body has abraded and changed shape
+    tagint remesh_atom;      // atom to be added to dlist on each call of remesh(), 0 if no atom to be added
     imageint image;        // image flags of xcm
-    imageint dummy;        // dummy entry for better alignment
-  
-    double old_STD_area; // TODO: This would be better placed as an array initiated and delated around their use in equalise_surface()
-    
-  
+    imageint dummy;        // dummy entry for better alignment  
   };
 
   Body *body;         // list of rigid bodies, owned and ghost
@@ -212,6 +214,7 @@ private:
   // temporary per-body storage
 
   int **counts;        // counts of atom types in bodies
+  double **equalise_surface_array;        // used to store standard deviation of body surface areas during equalise_surface()
   double **itensor;    // 6 space-frame components of inertia tensor
 
   // mass per body, accessed by granular pair styles
