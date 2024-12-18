@@ -120,13 +120,14 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
 
   stores_ids = 1;
   dynamic_flag = 1;
+  centroidstressflag = CENTROID_AVAIL;
+
   remesh_flag = 0;
   initial_remesh_flag = 0;
-  centroidstressflag = CENTROID_AVAIL;
 
   restart_peratom = 1; //~ Per-atom information is saved to the restart file
   peratom_flag = 1;
-  size_peratom_cols = 13; //~ normal x/y/z, area and displacement speed x/y/z, cumulative displacement, Wear Energy, Duration of elastic interaction preceeding deformation, intial timestep of current elastic interaction, elastic interaction flag, plastic interaction flag
+  size_peratom_cols = 9; //~ normal x/y/z, area and displacement speed x/y/z, cumulative displacement, Wear Energy, Duration of elastic interaction preceeding deformation, intial timestep of current elastic interaction, elastic interaction flag, plastic interaction flag
   peratom_freq = 1; // every step, **TODO change to user input utils::inumeric(FLERR,arg[5],false,lmp);
   create_attribute = 1; //fix stores attributes that need setting when a new atom is created
   
@@ -156,14 +157,8 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
     vertexdata[i][0] = vertexdata[i][1] = vertexdata[i][2] = 0.0; // normals (x,y,z)
     vertexdata[i][3] = 0.0; // associated area
     vertexdata[i][4] = vertexdata[i][5] = vertexdata[i][6] = 0.0; // displacement velocity (x,y,z) (ONLY ACCESSED BY LOCAL ATOMS)
-    
-    // vertexdata[i][7] = atom->tag[i]; // (ONLY ACCESSED BY LOCAL ATOMS)
     vertexdata[i][7] = 0.0; // (ONLY ACCESSED BY LOCAL ATOMS)
     vertexdata[i][8] = 0.0; // Cumulative Wear Energy (ONLY ACCESSED BY LOCAL ATOMS)
-    vertexdata[i][9] = 10000000000.0; // Minimum number of timesteps of elastic interaction preceeding a plastic deformation (ONLY ACCESSED BY LOCAL ATOMS)
-    vertexdata[i][10] = -1.0; // initial timestep of current elastic interation (-1.0 if no force acting upon atom) (ONLY ACCESSED BY LOCAL ATOMS)
-    vertexdata[i][11] = 0.0; // Elastic Interaction Flag (0 if no elastic/plastic interactions across the whole run) (ONLY ACCESSED BY LOCAL ATOMS)
-    vertexdata[i][12] = 0.0; // Plastic Interaction Flag (0 if no plastic interactions across the whole run - no abrasion) (ONLY ACCESSED BY LOCAL ATOMS)
   }
   
   // parse args for rigid body specification
@@ -297,7 +292,6 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
     p_start[i] = p_stop[i] = p_period[i] = 0.0;
     p_flag[i] = 0;
   }
-
 
 
   int iarg = 7;
@@ -739,8 +733,8 @@ void FixRigidAbrade::init()
 
   lastcheck = -1;
 
-  // Check that fix/wall/rigid is defined before fix/rigid/abrade in the input script
-  // If the walls are defined afterwards, their force contributions on atoms are not considered in FixRigidAbrade::post_force()
+  // Check that fix/wall/rigid, if present, is defined before fix/rigid/abrade in the input script
+  // If the walls are defined afterwards their force contributions on atoms are not considered in FixRigidAbrade::post_force()
 
   int rigid_abrade_defined = 0;
   for (auto &ifix : modify->get_fix_list()){
@@ -776,54 +770,57 @@ void FixRigidAbrade::init_list(int /*id*/, NeighList *ptr)
 void FixRigidAbrade::setup_pre_neighbor()
 {
 
-   std::cout << me << " -------- Calling setup_pre_neighbor() t = " << update->ntimestep << " ------------" << std::endl;
-
   if (reinitflag || !setupflag){
     
-    std::cout << me << ": Calling build_topology() at t = " << update->ntimestep << std::endl;
+    // building topology for use in setup_bodies_static()
     neighbor->build_topology();
+    
+    // calcualting initial mass, volume, and inertia of particles from their topology
     setup_bodies_static();
+    
+    // marking that the surface denisty threshold used for remeshing needs to be set in areas_and_normals()  
     setup_surface_density_threshold_flag = 1;
-
     areas_and_normals();
     setup_surface_density_threshold_flag = 0;
     
-    // [i][average_surface_area, sum_area_minus_average_sq, std_normalised, old STD]
-    memory->create(equalise_surface_array,nlocal_body+nghost_body,4,"rigid/abrade:equalise_surface_array");
-    for (int ibody = 0; ibody < (nlocal_body + nghost_body ); ibody++) equalise_surface_array[ibody][3] = 1000000000.0;
-
+    // allocating a temporary array for use in equalise_surface() 
+    if (remesh_flag){
+      // equalise_surface_array[i][average_surface_area, sum_area_minus_average_sq, std_normalised, old STD]
+      memory->create(equalise_surface_array,nlocal_body+nghost_body,4,"rigid/abrade:equalise_surface_array");
+      //  initialising the old STD to an arbitrarily large value which will be overwritten with the first calcualted STD
+      for (int ibody = 0; ibody < (nlocal_body + nghost_body ); ibody++) equalise_surface_array[ibody][3] = 1000000000.0;
     }
+  }
   
   else pre_neighbor();
 
-  
+  // Equalising surface
   if (initial_remesh_flag) equalise_surface();
   
 
   if ((reinitflag || !setupflag) && !inpfile){
-    memory->destroy(equalise_surface_array);
+    
+    if (remesh_flag)
+      memory->destroy(equalise_surface_array);
+
+    // Setting up rigid body dynamics with respect to the new topology
     setup_bodies_dynamic();
     }
-
-
-
-  // setupflag = 1;
-  
 }
 
 void FixRigidAbrade::setup_post_neighbor()
 {
-  // std::cout << me << " -------- Calling setup_post_neighbor() t = " << update->ntimestep << " ------------" << std::endl;
 
+  if ((reinitflag || !setupflag) && remesh_flag){
 
-  if (reinitflag || !setupflag){
-
+      // Rebuilding neighbor list following equalise_surface() at the end of the timestep
       end_of_step();
     
     }
   
   setupflag = 1;
 }
+
 /* ----------------------------------------------------------------------
    compute initial fcm and torque on bodies, also initial virial
    reset all particle velocities to be consistent with vcm and omega
@@ -839,11 +836,10 @@ void FixRigidAbrade::setup(int vflag)
   //       for atom types in rigid bodies - need a more careful test
   // must check here, not in init, b/c neigh/comm values set after fix init
 
+  // TODO: Put in error check here for setting the owning atom to be larger than the ghost cutoff for owned atoms....
   double cutghost = MAX(neighbor->cutneighmax,comm->cutghostuser);
   if (maxextent > cutghost)
     error->all(FLERR,"Rigid body extent > ghost cutoff - use comm_modify cutoff");
-
-  //check(1);
 
   // sum fcm, torque across all rigid bodies
   // fcm = force on COM
@@ -884,23 +880,6 @@ void FixRigidAbrade::setup(int vflag)
     tcm[1] += dz * f[i][0] - dx * f[i][2];
     tcm[2] += dx * f[i][1] - dy * f[i][0];
   }
-
-  // // extended particles add their rotation/torque to angmom/torque of body
-
-  // if (extended) {
-  //   double **torque = atom->torque;
-
-  //   for (i = 0; i < nlocal; i++) {
-  //     if (atom2body[i] < 0) continue;
-  //     Body *b = &body[atom2body[i]];
-  //     if (eflags[i] & TORQUE) {
-  //       tcm = b->torque;
-  //       tcm[0] += torque[i][0];
-  //       tcm[1] += torque[i][1];
-  //       tcm[2] += torque[i][2];
-  //     }
-  //   }
-  // }
 
   // enforce 2d body forces and torques
 
@@ -947,9 +926,6 @@ void FixRigidAbrade::initial_integrate(int vflag)
 { 
   double dtfm;
   
-  // std::cout << me << BOLD(": INITIAL_INTEGRATE neighbor->ago = ") << neighbor->ago << std::endl;
-
-  //check(2);
   for (int ibody = 0; ibody < nlocal_body; ibody++) {
     Body *b = &body[ibody];
 
@@ -1099,14 +1075,13 @@ void FixRigidAbrade::enforce2d()
   }
 }
 
-/* ---------------------------------------------------------------------- */
+/* ----------------------------------------------------------------------
+   Determine if forces imposed on atoms exceeds their hardness. If so, 
+   claculate their displacement velocity within their body. 
+------------------------------------------------------------------------- */
 
 void FixRigidAbrade::post_force(int /*vflag*/)
 {
-  // std::cout << me << BOLD(": POST_FORCE neighbor->ago = ") << neighbor->ago << std::endl;
-  
-  std::vector<Fix *> wall_list = modify->get_fix_by_style("wall/gran/region");
-  // TODO: Check if/when this breaks using other wall styles and add in errors
 
   if (langflag) apply_langevin_thermostat();
   if (earlyflag) compute_forces_and_torques();
@@ -1131,6 +1106,7 @@ void FixRigidAbrade::post_force(int /*vflag*/)
 	double x_rel[3];
   
   // Wall variables
+  std::vector<Fix *> wall_list = modify->get_fix_by_style("wall/gran/region");
   double vwall[3];
   double r_contact;
   int nc;
@@ -1142,8 +1118,6 @@ void FixRigidAbrade::post_force(int /*vflag*/)
   int ** firstneigh = list->firstneigh;
   int nlocal = atom->nlocal;
 
-  // Don't need to forward communicate normals to ghost atoms since they are only used for atom i which is local 
-  
   // loop over central atoms in neighbor lists 
   for (int ii = 0; ii < inum; ii ++){
   
@@ -1156,10 +1130,6 @@ void FixRigidAbrade::post_force(int /*vflag*/)
     // check if force is acting on atom i
     if (MathExtra::len3(f[i])) {
       
-      // std::cout << me << ": Force acting on atom " << atom->tag[i] << " = (" << f[i][0] << ", "  << f[i][1] << ", "  << f[i][2] << ") "<< std::endl;
-      // marking the start of the current elastic interaction
-      if (vertexdata[i][10] == -1.0) vertexdata[i][10] = update->ntimestep;
-      vertexdata[i][11] = 1.0;
       // ~~~~~~~~~~~~~~~~~~~~~~ Processing atom-atom abrasion ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
       
       // get number of neighbours for atom i
@@ -1230,135 +1200,92 @@ void FixRigidAbrade::post_force(int /*vflag*/)
             // Calculate the displacement on atom i from an impact by the wall
             displacement_of_atom(i, r_contact, x_rel, v_rel);  
         }
-    
       }
     } 
-    
-    // if not force is acting we reset the elastic interaction counter to -1.0
-    else {
-      vertexdata[i][10] = -1.0;
-    }
   }
 }
 
-/* ---------------------------------------------------------------------- */
+/* ----------------------------------------------------------------------
+   Recursively invoke remesh() to remove the most crowded atoms until the 
+  standard deviation of surface area per atom is minimised
+------------------------------------------------------------------------- */
+
 void FixRigidAbrade::equalise_surface() {
+      
+      // Resetting local remesh flags and associated vectors
       proc_remesh_flag = 0;
       global_remesh_flag = 0;      
-      if(!me)
-      std::cout << me << FYEL(": -------------------- CALLING EQUALISE_SURFACE()), t = " << update->ntimestep << "  --------------------") << std::endl;
+      equalise_surface_flag = 1;
+      body_dlist.clear();
+      dlist.clear();
       
-       body_dlist.clear();
-       dlist.clear();
-       equalise_surface_flag = 1;
-       setup_surface_density_threshold_flag = 1;
-      
-       int nlocal = atom->nlocal;
-      
+      int nlocal = atom->nlocal;
+    
+      for (int ibody = 0; ibody < (nlocal_body + nghost_body ); ibody++) {
 
-      
-
-
-       for (int ibody = 0; ibody < (nlocal_body + nghost_body ); ibody++) {
-
-        //Setting abraded flag so that the body is reprocessed in areas_and_normals following remeshing 
+        // Set body abraded flag so that the body is reprocessed in areas_and_normals following remeshing 
         body[ibody].abraded_flag = 1;
 
-        // Calculating the standard deviation of the areas associated with each atom
+        // Calculating the current surface density of each body account for the attom placed at the COM which does not have an associated area
         equalise_surface_array[ibody][0] = (body[ibody].surface_area / (body[ibody].natoms - 1 ));
         
+        // zeroing other elements of the temporary array
         equalise_surface_array[ibody][1] = 0.0;
-        
         equalise_surface_array[ibody][2] = 0.0;
 
        }
 
-
-
-        // Calculating the Variance (locally)
-        
+        // Calculating the local Variance
         for (int i = 0; i < nlocal; i++) {
-        
           if (atom2body[i] < 0) continue;
-
-          if (bodytag[i] != atom->tag[i]) equalise_surface_array[atom2body[i]][1] += (fabs(vertexdata[i][3]) - equalise_surface_array[atom2body[i]][0]) * (fabs(vertexdata[i][3]) - equalise_surface_array[atom2body[i]][0]);
-          
-        }
-
-      //   for (int ibody = 0; ibody < (nlocal_body + nghost_body ); ibody++) {
-
-      //     if (ibody < nlocal_body) std::cout << me << FRED(": PRE_COM ") << FGRN(" body : ") <<  atom->tag[body[ibody].ilocal] << "(" << ibody << ")" << ", [i][1] = " << equalise_surface_array[ibody][0] << ", [i][2] = " << equalise_surface_array[ibody][1] << std::endl;
-      //                         else std::cout << me << FRED(": PRE_COM ") << FYEL(" body : ") <<  atom->tag[body[ibody].ilocal] << "(" << ibody << ")" << ", [i][1] = " << equalise_surface_array[ibody][0] << ", [i][2] = " << equalise_surface_array[ibody][1] << std::endl;
-      //  }
+          if (bodytag[i] != atom->tag[i]) 
+            equalise_surface_array[atom2body[i]][1] += (fabs(vertexdata[i][3]) - equalise_surface_array[atom2body[i]][0]) * (fabs(vertexdata[i][3]) - equalise_surface_array[atom2body[i]][0]);
+        }      
       
-      
+          // summing variance to owning bodies split across processors
           commflag = EQUALISE;
           comm->reverse_comm(this,1);
 
-      //  for (int ibody = 0; ibody < (nlocal_body + nghost_body ); ibody++) {
-
-      //     if (ibody < nlocal_body) std::cout << me << FYEL(": MID_COM ") << FGRN(" body : ") <<  atom->tag[body[ibody].ilocal] << "(" << ibody << ")" << ", [i][1] = " << equalise_surface_array[ibody][0] << ", [i][2] = " << equalise_surface_array[ibody][1] << std::endl;
-      //                         else std::cout << me << FYEL(": MID_COM ") << FYEL(" body : ") <<  atom->tag[body[ibody].ilocal] << "(" << ibody << ")" << ", [i][1] = " << equalise_surface_array[ibody][0] << ", [i][2] = " << equalise_surface_array[ibody][1] << std::endl;
-      //  }
-
+          // communicating this back to the ghost bodies for consistency
           commflag = EQUALISE;
           comm->forward_comm(this,1);
 
-
-      //  for (int ibody = 0; ibody < (nlocal_body + nghost_body ); ibody++) {
-
-      //     if (ibody < nlocal_body) std::cout << me << FGRN(": POST_COM ") << FGRN(" body : ") <<  atom->tag[body[ibody].ilocal] << "(" << ibody << ")" << ", [i][1] = " << equalise_surface_array[ibody][0] << ", [i][2] = " << equalise_surface_array[ibody][1] << std::endl;
-      //                         else std::cout << me << FGRN(": POST_COM ") << FYEL(" body : ") <<  atom->tag[body[ibody].ilocal] << "(" << ibody << ")" << ", [i][1] = " << equalise_surface_array[ibody][0] << ", [i][2] = " << equalise_surface_array[ibody][1] << std::endl;
-      //  }
-
+      // Normalising STD against the average area-per-atom
       for (int ibody = 0; ibody < (nlocal_body + nghost_body ); ibody++) {
 
-        // Normalising STD against the average area-per-atom
 
-            //          0                   1                     2                       3            
-            // [i][average_surface_area, sum_area_minus_average_sq, std_normalised, old STD]
-    
-        equalise_surface_array[ibody][2] = sqrt((equalise_surface_array[ibody][1])/(body[ibody].natoms - 1))/equalise_surface_array[ibody][0];
+        //          0                   1                     2                       3            
+        // equalise_surface_array[ibody][average_surface_area, sum_area_minus_average_sq, std_normalised, old STD]
 
-        
-        if (equalise_surface_array[ibody][2] > equalise_surface_array[ibody][3])
-        // std::cout << me << ": "<< FGRN("new") << " | " << FRED("old") << " : " << FGRN("(") << equalise_surface_array[ibody][2] << FGRN(")") << " | " << FRED("(") << equalise_surface_array[ibody][3] << FRED(")") << std::endl;
-        // else 
-        // std::cout << me << ": "<< FRED("new") << " | " << FGRN("old") << " : " << FRED("(") << equalise_surface_array[ibody][2] << FRED(")") << " | " << FGRN("(") << equalise_surface_array[ibody][3] << FGRN(")") << std::endl;
-        // // Removing the atom with the smallest associated area to minimise the STD
-        std::cout << me << ": %STD SA of body " << atom->tag[body[ibody].ilocal] << "(" << ibody << ") = " << body[ibody].surface_area << "||" << equalise_surface_array[ibody][2] << "||" << equalise_surface_array[ibody][3] << std::endl;
-        
+        // Dont actually sqrt to get the STD since this value is only ever compared with itself
+        equalise_surface_array[ibody][2] = ((equalise_surface_array[ibody][1])/(body[ibody].natoms - 1))/equalise_surface_array[ibody][0];
+
         if (equalise_surface_array[ibody][2] < equalise_surface_array[ibody][3]) {
-        equalise_surface_array[ibody][3] = equalise_surface_array[ibody][2];
-
+          
+          // Setting old STD to current STD for comparision on next call of equalise_surface()
+          equalise_surface_array[ibody][3] = equalise_surface_array[ibody][2];
 
           // TODO: could possibly add a group mask here to only equalise a subsetof particles
-
-
 
           // only pushback one copy from each unique stored body (this is required for periodic boundaries where a body can be stored as both a local and ghost)
           if (!count(body_dlist.begin(), body_dlist.end(), atom->tag[body[ibody].ilocal])){
             dlist.push_back(body[ibody].min_area_atom_tag);
             body_dlist.push_back(atom->tag[body[ibody].ilocal]);
           }
-
-
-
-
         }
 
         // Updating the surface_density_threshold which is used as a remeshing condition moving forward
-        // std::cout << "Body: " << atom->tag[body[ibody].ilocal] << "(" << ibody << ") natoms: " << (body[ibody].natoms-1) << " S_A: " << body[ibody].surface_area << std::endl;
         body[ibody].surface_density_threshold = ((body[ibody].natoms-1)/body[ibody].surface_area*1.01); 
-    
       }
 
-
+  
+  // flagging that a processor is attempting to remove an atom
   if (dlist.size()) proc_remesh_flag = 1;
 
-  // only check if its not been set
-  if (!global_remesh_flag) MPI_Allreduce(&proc_remesh_flag,&global_remesh_flag,1,MPI_INT,MPI_SUM,world);
+  // checking if remeshing has been initated on any processor
+  MPI_Allreduce(&proc_remesh_flag,&global_remesh_flag,1,MPI_INT,MPI_SUM,world);
     
+
   if (global_remesh_flag){
     remesh_rebuild_flag = 1;
     std::cout << me << FBLU(": dlist: ");
@@ -1367,41 +1294,34 @@ void FixRigidAbrade::equalise_surface() {
       }
       
 
+    // processing the end of the recursive calls of equalise_surface()
     if (equalise_surface_flag){
 
-    resetup_bodies_static();
+      resetup_bodies_static();
 
-    equalise_surface_flag = 0;
+      equalise_surface_flag = 0;
 
-    areas_and_normals();
-  
-    // Setting flags to end equalise surface
+      areas_and_normals();
 
-    setup_surface_density_threshold_flag = 0;
+      setup_surface_density_threshold_flag = 0;
 
-    // Resetting abraded flag for all bodies
-    for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
-      body[ibody].abraded_flag = 0;
-    }
+      // Resetting abraded flag for all bodies
+      for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
+        body[ibody].abraded_flag = 0;
+      }
 
-    if(!me)
-    std::cout << me << BOLD(": FINISHED PROCCESSING EQUALISE SURFACE") << std::endl;
-
-
-    initial_remesh_flag = 0;
+      initial_remesh_flag = 0;
     }
  
 }
 
-void FixRigidAbrade::areas_and_normals() {
-  if(!me)
-  std::cout << me << FYEL(": -------------------- CALLING AREAS_AND_NORMALS()), t = " << update->ntimestep << "  --------------------") << std::endl;
-  global_remesh_flag = 0;
-  proc_remesh_flag = 0;
+/* ----------------------------------------------------------------------
+  Calcualte the areas and normals of body atoms from their angle topology.
+  Also, call remesh() and equalise_surface() if needed
+------------------------------------------------------------------------- */
 
-  body_dlist.clear();
-  dlist.clear();
-  
+void FixRigidAbrade::areas_and_normals() {
+
   int i1, i2, i3, n, type;
   double delx1, dely1, delz1, delx2, dely2, delz2;
   double rsq1, rsq2, rsq3, r1, r2;
@@ -1421,9 +1341,16 @@ void FixRigidAbrade::areas_and_normals() {
   int nlocal = atom->nlocal;
   int nghost = atom->nghost;
   int newton_bond = force->newton_bond;
+  
+  if (remesh_flag){
+    // Resetting local remesh flags and associated vectors
+    global_remesh_flag = 0;
+    proc_remesh_flag = 0;
+    body_dlist.clear();
+    dlist.clear();
+    }
 
-
-  // Reset vertex data for local and ghost atoms -> since the ghost atoms may be be accessed when cycling through angles
+  // Reset vertex data for local and ghost atoms since the ghost atoms may also be accessed when cycling through angles
   for (int i = 0; i < (nlocal + nghost); i++) {
 
     // Only processing properties relevant to bodies which have abraded and changed shape
@@ -1440,12 +1367,12 @@ void FixRigidAbrade::areas_and_normals() {
   norm2 = 0.0;
   norm3 = 0.0;
 
-  // resetting remesh flags for local and ghost bodies (only one atom can be removed from a body on a single areas_and_normal() call)
-  for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].remesh_atom = 0;
+  // resetting remesh_atom for local and ghost bodies since only one atom can be removed from a body on a single remesh() call. 
+  // remesh_atom = 0 if no atom is to be removed
+  if (remesh_flag)
+    for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].remesh_atom = 0;
 
-  // std::cout << me << FMAG(" [neighbor->nanglelist, remesh_overflow_threshold, overflow_anglelist.size()] = (") << neighbor->nanglelist << FMAG(",") << remesh_overflow_threshold << FMAG(",") << overflow_anglelist.size() << FMAG(") = ") << neighbor->nanglelist + remesh_overflow_threshold + overflow_anglelist.size() << std::endl;
-
-  // cycling through angles
+  // cycling through angles (including those from the overflow list if present)
   for (int n = 0; n < (neighbor->nanglelist + remesh_overflow_threshold + overflow_anglelist.size()); n++) {
     
     // Storing each atom in the angle
@@ -1463,7 +1390,7 @@ void FixRigidAbrade::areas_and_normals() {
     // Only processing properties relevant to bodies which have abraded and changed shape
     if (!body[atom2body[i1]].abraded_flag) continue;
     
-    // 1st bond
+    // 1st edge
 
     delx1 = displace[i1][0] - displace[i2][0];
     dely1 = displace[i1][1] - displace[i2][1];
@@ -1472,7 +1399,7 @@ void FixRigidAbrade::areas_and_normals() {
     rsq1 = delx1 * delx1 + dely1 * dely1 + delz1 * delz1;
     r1 = sqrt(rsq1);
 
-    // 2nd bond
+    // 2nd edge
 
     delx2 = displace[i3][0] - displace[i2][0];
     dely2 = displace[i3][1] - displace[i2][1];
@@ -1483,14 +1410,15 @@ void FixRigidAbrade::areas_and_normals() {
     
     // cross product
     // a x b = (a2.b3 - a3.b2)i + (a3.b1 - a1.b3)j + (a1.b2 - a2.b1)k
-    // b is the first bond whilst a is the second bond.
+    // b is the first edge whilst a is the second edge.
 
     axbi = dely2*delz1 - delz2*dely1;
     axbj = delz2*delx1 - delx2*delz1;
     axbk = delx2*dely1 - dely2*delx1;
 
-    // area of facet
+    // area of angle
 
+    // TODO: This sqrt might be able to moved and only processed once
     area = (0.5) * sqrt(axbi*axbi + axbj*axbj + axbk*axbk); 
     sub_area = area/3.0;
     
@@ -1512,7 +1440,7 @@ void FixRigidAbrade::areas_and_normals() {
         n2 = -n2;
         n3 = -n3;
 
-      // if we are remeshing, we removed an atom (which has been abraded on this timestep) in the flipped angle
+      // if remeshing is enabled we remove an atom in the offending angle. Precendent is given to an atom which has just been displaced.
       if (remesh_flag) {
     
         std::cout << me << "|" << update->ntimestep << ": angle (" << atom->tag[i1] << ", " << atom->tag[i2] << ", " << atom->tag[i3] << ") normal pointing inwards" << std::endl;
@@ -1525,10 +1453,7 @@ void FixRigidAbrade::areas_and_normals() {
           if (MathExtra::len3(displacement)) {std::cout << atom->tag[i1] << std::endl;
                                               if (!body[atom2body[i1]].remesh_atom) {
                                                 body[atom2body[i1]].remesh_atom = atom->tag[i1];
-                                                // dlist.push_back(atom->tag[i1]);
-                                                // body_dlist.push_back(bodytag[i1]);
                                                 }
-                                              // return;
                                               }
         } if(i2 < nlocal) {
           displacement[0] = vertexdata[i2][4];
@@ -1537,10 +1462,7 @@ void FixRigidAbrade::areas_and_normals() {
           if (MathExtra::len3(displacement)) {std::cout << atom->tag[i2] << std::endl;
                                               if (!body[atom2body[i2]].remesh_atom) {
                                                 body[atom2body[i2]].remesh_atom = atom->tag[i2];
-                                                // dlist.push_back(atom->tag[i2]);
-                                                // body_dlist.push_back(bodytag[i2]);
                                                 }
-                                              // return;
                                               }
         } if(i3 < nlocal) {
           displacement[0] = vertexdata[i3][4];
@@ -1550,10 +1472,7 @@ void FixRigidAbrade::areas_and_normals() {
                                               std::cout << atom->tag[i3] << std::endl;
                                               if (!body[atom2body[i3]].remesh_atom) {
                                                 body[atom2body[i3]].remesh_atom = atom->tag[i3];
-                                                // dlist.push_back(atom->tag[i3]);
-                                                // body_dlist.push_back(bodytag[i3]);
                                                 }
-                                              // return;
                                               }
         }
 
@@ -1561,29 +1480,20 @@ void FixRigidAbrade::areas_and_normals() {
                                               std::cout << atom->tag[i1] << std::endl;
                                               if (!body[atom2body[i1]].remesh_atom) {
                                                 body[atom2body[i1]].remesh_atom = atom->tag[i1];
-                                                // dlist.push_back(atom->tag[i1]);
-                                                // body_dlist.push_back(bodytag[i1]);
                                                 }
-                                              // return;
                                               
         } if(i2 < nlocal) {
                                               std::cout << atom->tag[i2] << std::endl;
                                               if (!body[atom2body[i2]].remesh_atom) {
                                                 body[atom2body[i2]].remesh_atom = atom->tag[i2];
-                                                // dlist.push_back(atom->tag[i2]);
-                                                // body_dlist.push_back(bodytag[i2]);
                                                 }
-                                              // return;
                                               
         } if(i3 < nlocal) {
         
                                               std::cout << atom->tag[i3] << std::endl;
                                               if (!body[atom2body[i3]].remesh_atom) {
                                                 body[atom2body[i3]].remesh_atom = atom->tag[i3];
-                                                // dlist.push_back(atom->tag[i3]);
-                                                // body_dlist.push_back(bodytag[i3]);
                                                 }
-                                              // return;
                                               
         }
       } 
@@ -1604,7 +1514,6 @@ void FixRigidAbrade::areas_and_normals() {
     vertexdata[i3][0] += n1*sub_area;
     vertexdata[i3][1] += n2*sub_area;
     vertexdata[i3][2] += n3*sub_area;
-
     
     }
 
@@ -1613,14 +1522,14 @@ void FixRigidAbrade::areas_and_normals() {
   commflag = NORMALS;
   comm->reverse_comm(this,4);
 
-  // Setting the surface_area and other remeshing properties of all abraded bodies (ghost and local) to 0
+  // Setting the surface area and other remeshing properties of all abraded bodies (ghost and local) to 0
   
   if (remesh_flag){
     for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
-      
-      if (ibody < nlocal_body) std::cout << me << ": Body " << atom->tag[body[ibody].ilocal] << " abraded flag = " << body[ibody].abraded_flag << std::endl;
 
+      // Only processing properties relevant to bodies which have abraded and changed shape
       if (!body[ibody].abraded_flag) continue;
+      
       body[ibody].surface_area = 0.0;
       body[ibody].min_area_atom = 1000000.0;
       body[ibody].min_area_atom_tag = 0;
@@ -1629,232 +1538,113 @@ void FixRigidAbrade::areas_and_normals() {
 
   // normalise the length of all atom normals
   for (int i = 0; i < nlocal; i++) {
-    // Only processing properties relevant to bodies which have abraded and changed shape
+   
+   // Only processing properties relevant to bodies which have abraded and changed shape
     if (atom2body[i] < 0) continue;
     if (!body[atom2body[i]].abraded_flag) continue;
 
-      // printing all local atoms:
-      // std::cout << "proc: " << me << " t = "<< update->ntimestep << ": atom: (" << i << " || " << atom->tag[i] << ") area: " << vertexdata[i][3] << std::endl;
-
-      // double bodynormals[3];
-      // double globalnormals[3];
       norm1 = vertexdata[i][0];
       norm2 = vertexdata[i][1];
       norm3 = vertexdata[i][2];
       length = sqrt(norm1*norm1 + norm2*norm2 + norm3*norm3);
 
       Body *b = &body[atom2body[i]];
-      
-      // bodynormals[0] = norm1/length;
-      // bodynormals[1] = norm2/length;
-      // bodynormals[2] = norm3/length; 
-
-      // MathExtra::matvec(b->ex_space,b->ey_space,b->ez_space,bodynormals,globalnormals);
-
-      // vertexdata[i][0] = globalnormals[0];
-      // vertexdata[i][1] = globalnormals[1];
-      // vertexdata[i][2] = globalnormals[2];
-  
+    
       // Storing normals in body coordinates
       vertexdata[i][0] = norm1/length;
       vertexdata[i][1] = norm2/length;
       vertexdata[i][2] = norm3/length;
       
-      if (bodytag[i] != atom->tag[i]) {
-
-        // Calculating the surface area of each body
-        if (remesh_flag){  
-          // std::cout << "Setting surface area += " << fabs(vertexdata[i][3]) << std::endl;
+      // calcualting surface area of each body
+      if ((bodytag[i] != atom->tag[i]) && remesh_flag) {
           
           area_of_atom = fabs(vertexdata[i][3]);
           b->surface_area += area_of_atom;
 
-        // Storing the bodies' atom with the minimum associated area as long as its not the atom which owns the body
-        // std::cout << me << ": considering atom " << atom->tag[i]  << ", area: " << fabs(vertexdata[i][3]) << std::endl;
-        
+        // Storing the bodies' atom with the minimum associated area
         if (area_of_atom <= (b->min_area_atom * (1.0 + 0.01))) {
-            
             // if the incoming area is equal to the current stored area then give precident to the larger atom tag 
             if (area_of_atom < (b->min_area_atom * (1.0 - 0.01))) {
-              // std::cout << me << BOLD(": Storing atom ") << atom->tag[i] << std::endl;
               b->min_area_atom = area_of_atom;
               b->min_area_atom_tag = atom->tag[i];
             } else {
                   if (atom->tag[i] > b->min_area_atom_tag) {
-                  // std::cout << me << BOLD(": Storing atom ") << atom->tag[i] << std::endl;
-                  
                   b->min_area_atom = area_of_atom;
                   b->min_area_atom_tag = atom->tag[i];
                 }
-            }
-            
-          }  
-        }
+              }
+        }  
       }
-    } 
+  } 
 
   if (remesh_flag){
 
+    // Reverse comminicate the min area atom from the ghost bodies back to the locally stored body.
+    // Instead of simply summing, we overide the min area if it is smaller than the one stored locally
+    // also include the body surface area aswell as any remesh flags set from inverted angles
+    commflag = MIN_AREA;
+    comm->reverse_comm(this,4);
 
-//   // Printing pre comm min area atoms for each body
-//   for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
-//                                               // Still need to check ghost bodies, what we actually care about is if the min_area_atom of that body is locally stored so it can be remeshed...
-//                                               for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
-                                                
-//                                                 // printing the post_com min_area_atoms
-//                                             if (ibody < nlocal_body){ 
-
-//                                                         if (atom->map(body[ibody].min_area_atom_tag) < 0)
-//                                                                           std::cout << "proc: " << me << " t = "<< update->ntimestep << ": " << FRED("PRE") << " " << FGRN("local_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FRED(" unowned ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "]" << std::endl;
-//                                                         else if (atom->map(body[ibody].min_area_atom_tag) >= atom->nlocal)
-//                                                                           std::cout << "proc: " << me << " t = "<< update->ntimestep << ": " << FRED("PRE") << " " << FGRN("local_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FYEL(" ghost ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "]" << std::endl;
-//                                                          else std::cout << "proc: " << me << " t = "<< update->ntimestep << ": " << FRED("PRE") << " " << FGRN("local_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FGRN(" local ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "]" << std::endl;
-//                                                 }
-//                                                 else {
-//                                                         if (atom->map(body[ibody].min_area_atom_tag) < 0) 
-//                                                                         std::cout << "proc: " << me << " t = "<< update->ntimestep << ": "<< FRED("PRE") << " " << FCYN("ghost_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FRED(" unowned ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" <<   body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "]" << std::endl;
-//                                                         else if (atom->map(body[ibody].min_area_atom_tag) >= atom->nlocal) 
-//                                                                         std::cout << "proc: " << me << " t = "<< update->ntimestep << ": "<< FRED("PRE") << " " << FCYN("ghost_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FYEL(" ghost ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "]" << std::endl;
-//                                                          else std::cout << "proc: " << me << " t = "<< update->ntimestep << ": "<< FRED("PRE") << " " << FCYN("ghost_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FGRN(" local ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "]" << std::endl;
-//                                                 }
-//                                                 // std::cout << update->ntimestep << ": Body: " << ibody << " min_area_atom: " << body[ibody].min_area_atom_tag  << " (" << body[ibody].min_area_atom <<")"<< std::endl;
-//                                               }
-//  }
-
-  // Reverse comminicate the min area atom from the ghost bodies back to the locally stored body.
-  // Instead of simply summing, we overide the min area if it is smaller than the one stored locally
-  // also include the body surface area aswell as any remesh flags from inverted angles
-  commflag = MIN_AREA;
-  comm->reverse_comm(this,4);
-
-
-//   // Printing pre comm min area atoms for each body
-//   for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
-//                                               // Still need to check ghost bodies, what we actually care about is if the min_area_atom of that body is locally stored so it can be remeshed...
-//                                               for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
-                                                
-//                                                 // printing the post_com min_area_atoms
-//                                             if (ibody < nlocal_body){ 
-
-//                                                         if (atom->map(body[ibody].min_area_atom_tag) < 0)
-//                                                                           std::cout << "proc: " << me << " t = "<< update->ntimestep << ": " << FYEL("REVERSE") << " " << FGRN("local_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FRED(" unowned ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "]" << std::endl;
-//                                                         else if (atom->map(body[ibody].min_area_atom_tag) >= atom->nlocal)
-//                                                                           std::cout << "proc: " << me << " t = "<< update->ntimestep << ": " << FYEL("REVERSE") << " " << FGRN("local_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FYEL(" ghost ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "]" << std::endl;
-//                                                          else std::cout << "proc: " << me << " t = "<< update->ntimestep << ": " << FYEL("REVERSE") << " " << FGRN("local_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FGRN(" local ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "]" << std::endl;
-//                                                 }
-//                                                 else {
-//                                                         if (atom->map(body[ibody].min_area_atom_tag) < 0) 
-//                                                                         std::cout << "proc: " << me << " t = "<< update->ntimestep << ": "<< FYEL("REVERSE") << " " << FCYN("ghost_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FRED(" unowned ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "]" << std::endl;
-//                                                         else if (atom->map(body[ibody].min_area_atom_tag) >= atom->nlocal) 
-//                                                                         std::cout << "proc: " << me << " t = "<< update->ntimestep << ": "<< FYEL("REVERSE") << " " << FCYN("ghost_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FYEL(" ghost ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "]" << std::endl;
-//                                                          else std::cout << "proc: " << me << " t = "<< update->ntimestep << ": "<< FYEL("REVERSE") << " " << FCYN("ghost_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FGRN(" local ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "]" << std::endl;
-//                                                 }
-//                                                 // std::cout << update->ntimestep << ": Body: " << ibody << " min_area_atom: " << body[ibody].min_area_atom_tag  << " (" << body[ibody].min_area_atom <<")"<< std::endl;
-//                                               }
-//  }
-
-
-  // Forward communicate this gloabal-per-body minimum back out to the ghost bodies
-  commflag = MIN_AREA;
-  comm->forward_comm(this,5);
-  
-  // Printing pre comm min area atoms for each body
-  for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
-                                                
-                                                // printing the post_com min_area_atoms
-                                            if (ibody < nlocal_body){ 
-
-                                                        if (atom->map(body[ibody].min_area_atom_tag) < 0)
-                                                                          std::cout << "proc: " << me << " t = "<< update->ntimestep << ": " << FGRN("FORWARD") << " " << FGRN("local_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FRED(" unowned ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "] COM = (" << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", " << body[ibody].xcm[2] << ")" << std::endl;
-                                                        else if (atom->map(body[ibody].min_area_atom_tag) >= atom->nlocal)
-                                                                          std::cout << "proc: " << me << " t = "<< update->ntimestep << ": " << FGRN("FORWARD") << " " << FGRN("local_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FYEL(" ghost ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "] COM = (" << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", " << body[ibody].xcm[2] << ")" << std::endl;
-                                                         else std::cout << "proc: " << me << " t = "<< update->ntimestep << ": " << FGRN("FORWARD") << " " << FGRN("local_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FGRN(" local ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "] COM = (" << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", " << body[ibody].xcm[2] << ")" << std::endl;
-                                                }
-                                                else {
-                                                        if (atom->map(body[ibody].min_area_atom_tag) < 0) 
-                                                                        std::cout << "proc: " << me << " t = "<< update->ntimestep << ": "<< FGRN("FORWARD") << " " << FCYN("ghost_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FRED(" unowned ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "] COM = (" << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", " << body[ibody].xcm[2] << ")" << std::endl;
-                                                        else if (atom->map(body[ibody].min_area_atom_tag) >= atom->nlocal) 
-                                                                        std::cout << "proc: " << me << " t = "<< update->ntimestep << ": "<< FGRN("FORWARD") << " " << FCYN("ghost_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FYEL(" ghost ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "] COM = (" << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", " << body[ibody].xcm[2] << ")" << std::endl;
-                                                         else std::cout << "proc: " << me << " t = "<< update->ntimestep << ": "<< FGRN("FORWARD") << " " << FCYN("ghost_body: ") << atom->tag[body[ibody].ilocal]  << " surface area: " << body[ibody].surface_area << ", ntoms = " << body[ibody].natoms << ", min_area_atom: " << body[ibody].min_area_atom_tag << FGRN(" local ") << " (" << body[ibody].min_area_atom <<"), [a|r] = [" << body[ibody].abraded_flag << "|" << body[ibody].remesh_atom << "] COM = (" << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", " << body[ibody].xcm[2] << ")" << std::endl;
-                                                }
-                                                // std::cout << update->ntimestep << ": Body: " << ibody << " min_area_atom: " << body[ibody].min_area_atom_tag  << " (" << body[ibody].min_area_atom <<")"<< std::endl;
-                                              }
-
+    // Forward communicate this gloabal-per-body minimum back out to the ghost bodies
+    commflag = MIN_AREA;
+    comm->forward_comm(this,5);
 
     // Checking if the surface density of any bodies requires that they be remeshed
-    // NOTE: natoms is decreased by one to account for the atom placed at the COM of each body
     for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
       
-        // if (!debug_remesh_once){
-        //   dlist.push_back(body[ibody].min_area_atom_tag);
-        //   body_dlist.push_back(atom->tag[body[ibody].ilocal]);
-        //   body[ibody].remesh_atom = 1; 
-        //   debug_remesh_once = 1;
-        // }
-        
-      // std::cout << update->ntimestep << ": Body: " << ibody << " min_area_atom: " << body[ibody].min_area_atom_tag  << " (" << body[ibody].min_area_atom <<")"<< std::endl;
-
         if (!body[ibody].abraded_flag) continue;
 
-        // std::cout << me << ": evalulating body: " << atom->tag[body[ibody].ilocal] << " at t = " << update->ntimestep << std::endl;
-
-      // Setting the surface_density_thresholds used as a condition for remeshing (set correctly for ghost bodies since surface area has been communicated)
+      // Setting the surface_density_thresholds used as a condition for remeshing (this is also set correctly for ghost bodies since surface area has been communicated)
+      // the number of atoms is decremented by one to account for the fact that the owning atom is placed at the centre and does not contribute an area
       if (setup_surface_density_threshold_flag) {
-        // std::cout << me << ": Body: " << atom->tag[body[ibody].ilocal] << " natoms: " << (body[ibody].natoms-1) << " S_A: " << body[ibody].surface_area << std::endl;
         body[ibody].surface_density_threshold = ((body[ibody].natoms-1)/body[ibody].surface_area)*1.01; 
         }
       
-
       // If the surface atom density has increased beyond the inital threshold we remesh the body atom with the minimum associated area (at the region of highest density)
       if ((body[ibody].natoms-1)/body[ibody].surface_area > body[ibody].surface_density_threshold) {
-        // std::cout << me << ": t = "<< update->ntimestep <<" , Body: " << ibody << " surface density " << (body[ibody].natoms-1)/body[ibody].surface_area << " || " << body[ibody].surface_density_threshold << " natoms: " << (body[ibody].natoms-1) << std::endl;
-        
-         if (!body[ibody].remesh_atom){
-              // dlist.push_back(body[ibody].min_area_atom_tag);
-              // body_dlist.push_back(atom->tag[body[ibody].ilocal]);
-              body[ibody].remesh_atom = body[ibody].min_area_atom_tag; 
-              }
 
-              
+          //  If no atom has been flagged needing to be removed then we add the min area atom
+          if (!body[ibody].remesh_atom){
+            body[ibody].remesh_atom = body[ibody].min_area_atom_tag; 
+          }              
       } 
 
-      // If the body hasn't been remeshed we can set its abraded flag to 0 so it is not considered when reprocessing the area_and_normals on the current timestep
+      // If the body hasn't been remeshed we set its abraded flag to 0 so it is not considered when reprocessing the area_and_normals on the current timestep
       if (!body[ibody].remesh_atom) {
-        // std::cout << me << ": body: " << atom->tag[body[ibody].ilocal] << " not remeshed, setting abraded flag to 0." << std::endl;
         body[ibody].abraded_flag = 0; 
       } else {
-       
-          // only pushback one copy from each unique stored body (this is required for periodic boundaries where a body can be stored as both a local and ghost)
+          // pushback one copy from each unique stored body (this is required for periodic boundaries where a body can be stored as both a local and ghost)
           if (!count(body_dlist.begin(), body_dlist.end(), atom->tag[body[ibody].ilocal])){
             dlist.push_back(body[ibody].remesh_atom);
             body_dlist.push_back(atom->tag[body[ibody].ilocal]);
-          }
+        }
       }
     }
-    
-    // std::cout << "(" << update->ntimestep << ") PRE: neighbor->nanglelist" << neighbor->nanglelist << ", atom->nangles: " << atom->nangles  << ",  atoms->nlocal: " <<  atom->nlocal << ",  atom->natoms: " <<  atom->natoms << std::endl;
+
+    // flagging that a processor is attempting to remove an atom
+    if (dlist.size()) proc_remesh_flag = 1;
+
+    // checking if remeshing has been initated on any processor
+    MPI_Allreduce(&proc_remesh_flag,&global_remesh_flag,1,MPI_INT,MPI_SUM,world);
+
+    if (global_remesh_flag){
+      remesh_rebuild_flag = 1;
+      std::cout << me << FBLU(": dlist: ");
+      for (int d = 0; d < dlist.size(); d++)std::cout << dlist[d] << "("<< body_dlist[d] <<") "; std::cout << std::endl;
+        remesh(dlist);
+        }
+
+
+    if (equalise_surface_flag) equalise_surface();
   }
-
-  if (dlist.size()) proc_remesh_flag = 1;
-
-  // only check if its not been set
-  if (!global_remesh_flag) MPI_Allreduce(&proc_remesh_flag,&global_remesh_flag,1,MPI_INT,MPI_SUM,world);
-    
-  if (global_remesh_flag){
-    remesh_rebuild_flag = 1;
-    std::cout << me << FBLU(": dlist: ");
-    for (int d = 0; d < dlist.size(); d++)std::cout << dlist[d] << "("<< body_dlist[d] <<") "; std::cout << std::endl;
-       remesh(dlist);
-      }
-
-if (equalise_surface_flag) equalise_surface();
-if(!me)
-std::cout << me << FGRN(": -------------------- FINISHED CALLING AREAS_AND_NORMALS(), t = " << update->ntimestep << "  --------------------") << std::endl;
-
 }
 
 
-/* ---------------------------------------------------------------------- */
+/* ----------------------------------------------------------------------
+  Calaulte the dispalcement velocity of an abrading atom in the global
+  coordinate system
+------------------------------------------------------------------------- */
+
 
 void FixRigidAbrade::displacement_of_atom(int i, double impacting_radius, double x_rel[3], double v_rel[3]) {
 
@@ -1864,15 +1654,7 @@ void FixRigidAbrade::displacement_of_atom(int i, double impacting_radius, double
   // Check that the i and the impactor are in contact - This is necessary as otherwise atoms which are aproaching i can contribute to its abrasion even if they are on the other side of the simulation
   if (MathExtra::len3(x_rel) > r_eff) return;
 
-  // TODO: REMOVE
-  // if (fabs(v_rel[0]) < TOLERANCE) v_rel[0] = 0.0;
-  // if (fabs(v_rel[1]) < TOLERANCE) v_rel[1] = 0.0;
-  // if (fabs(v_rel[2]) < TOLERANCE) v_rel[2] = 0.0;
-
-  // std::cout << me << " Calculating the displacement of atom: " << atom->tag[i] << " x_rel (" << x_rel[0] << ", " << x_rel[1] << ", "  << x_rel[2] << ") v_rel (" << v_rel[0] << ", " << v_rel[1] << ", "  << v_rel[2] << ") " << std::endl;
-
-  // Converting normals from body coordinates to global system so they can be compared with atom velocities
-  // double global_normals[3] = {vertexdata[i][0], vertexdata[i][1], vertexdata[i][2]};
+  // Converting normals from body coordinates to global coordinates so they can be compared with atom velocities
   double bodynormals[3] = {vertexdata[i][0], vertexdata[i][1], vertexdata[i][2]};
   double global_normals[3];
 
@@ -1938,9 +1720,11 @@ void FixRigidAbrade::displacement_of_atom(int i, double impacting_radius, double
   // Per atom indetation depth
   double htp;
   htp = (x[i][0]*global_normals[0] + x[i][1]*global_normals[1] + x[i][2]*global_normals[2]) - ((x_rel[0] + x[i][0])*global_normals[0] + (x_rel[1] + x[i][1])*global_normals[1] + (x_rel[2] + x[i][2])*global_normals[2] - r_eff);
+  
   // Calculate the normal displacement corresponding to deltas (from geometric considerations)
   double dsh;
   dsh = htp - r_eff + sqrt(((r_eff - htp)*(r_eff - htp)) + 2*sqrt(abs(2*r_eff*htp - htp*htp)) * deltas);
+  
   // Verify that the indentation depth is positive
   bool hl = htp > 0;
 
@@ -1950,14 +1734,6 @@ void FixRigidAbrade::displacement_of_atom(int i, double impacting_radius, double
 
   // Calculting the cumulative work done to displace the atom
   vertexdata[i][8] += fabs(fnorm) * fabs(total_normal_displacement);
-
-  // if a displacement occurs we store how long the current elastic interaction has lasted prior to deformation (only storing the minimum value across the run)
-    if (vertexdata[i][8]){ 
-      vertexdata[i][12] = 1.0;
-      if ((update->ntimestep - vertexdata[i][10]) < vertexdata[i][9]){
-        vertexdata[i][9] = (update->ntimestep - vertexdata[i][10]);
-      }
-    }
 
   // Calculate the total displacement speed in global coordinates
   double displacement_speed;
@@ -1971,7 +1747,7 @@ void FixRigidAbrade::displacement_of_atom(int i, double impacting_radius, double
 }
 
 /* ----------------------------------------------------------------------
- Method to check if an angle proposed in remesh() is valid. An angle is assumed valid if:
+ Function to check if an angle proposed in remesh() is valid. An angle is assumed valid if:
   - Its normal points outwards from the respective body's COM in both body and projected coordinates. 
   - An edge of the angle crosses the boundary of the void being remeshed
   - An atom in the boundary is contatined within the proposed angle in the projected coordinates
@@ -2060,7 +1836,7 @@ bool FixRigidAbrade::angle_check(int base, int target, std::vector<std::vector<d
     }
 
     // Checking that the new angle doesn't cross the boundary
-    //  each angle defines two new lines between the base->target and base->(target+1). Neither can cross a boundary
+    // each angle defines two new lines between the base->target and base->(target+1). Neither can cross a boundary
 
     for (int n = 0; n < 2; n++){
         target = (target + n)%projected_points.size();
@@ -2110,47 +1886,18 @@ bool FixRigidAbrade::angle_check(int base, int target, std::vector<std::vector<d
   return valid_angle;
 }
 
+/* ----------------------------------------------------------------------
+    Function adapted from fix_bond_break.cpp to remove a dlist of atoms
+    from owned bodies and rebuild the local topology into overflow lists.
+---------------------------------------------------------------------- */
 
-
-// Method adapted from fix_bond_break.cpp to remove a list of atoms from owned bodies and rebuild the local topology.
-// Each proc which owns a copy of the body contatining a given dlist atom must call remesh()
 void FixRigidAbrade::remesh(std::vector<int> dlist){
-  
-  std::cout << me << BOLD(FRED(": calling remesh() at t = ")) << update->ntimestep <<  std::endl;
 
-  // check that all procs have the needed ghost atoms within ghost cutoff
-  // only check if neighbor list has changed since last check
-  if(lastcheck < neighbor->lastcall){
-    int i,j,n;
-  tagint *slist;
-
-  int **nspecial = atom->nspecial;
-  tagint **special = atom->special;
-  int nlocal = atom->nlocal;
-
-  int flag = 0;
-  for (i = 0; i < nlocal; i++) {
-    slist = special[i];
-    n = nspecial[i][1];
-    for (j = 0; j < n; j++)
-      if (atom->map(slist[j]) < 0) flag = 1;
-  }
-
-
-  // Can't call this here since not all procs will run remesh() on a given timestep. 
-  
-  // int flagall;
-  // MPI_Allreduce(&flag,&flagall,1,MPI_INT,MPI_SUM,world);
-  if (flag)
-    error->one(FLERR,"Fix Rigid/Abrade needs ghost atoms from further away to sucessfully remesh");
-  lastcheck = update->ntimestep;
-  }
-  
   // Variable to store the current atom being removed and the tag of the atom owning its body
   int remove_tag = 0;
   int body_remove_tag = 0;
 
-  // clearing remeshing vectors
+  // clearing remeshing vectors and setting flags
   boundaries.clear();
   edges.clear();
   new_angles_list.clear();
@@ -2160,71 +1907,53 @@ void FixRigidAbrade::remesh(std::vector<int> dlist){
 
   // Cycling through atoms to be removed to set their appropriate tags and decrement the number of atoms in their respective bodies
   for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i ++) {
-
   
-  // initiate vector to hold the boundaries and edges for each atom in dlist(intiated now to preserve indexing)
-  // current also reserve space for atoms which are unowned... this means we can cycle through the arrays using dlist.size()
-  // if space was not resserved then the length of dlist{} and the follow arrays may not be equal 
-  boundaries.push_back({});
-  edges.push_back({});
-  new_angles_list.push_back({});
-  new_angles_type.push_back(-1); // -1 being a placeholder value which will be updated during remeshing
+    // initiate vector to hold the boundaries and edges for each atom in dlist (intiated now to preserve indexing used in communication)
+    boundaries.push_back({});
+    edges.push_back({});
+    new_angles_list.push_back({});
+    new_angles_type.push_back(-1); // -1 being a placeholder value which will be updated during remeshing
 
-
-
-  remove_tag = dlist[dlist_i];
-  body_remove_tag = body_dlist[dlist_i];
-
-  // std::cout << me <<  BOLD(": pushing back atom ") << remove_tag << std::endl;  
-  total_dlist.push_back(remove_tag);
-
-  // get local index of owning body atom
-  tagint body_remove_id = atom2body[atom->map(body_remove_tag)];
-
-  // std::cout << me << ": body: " << body_remove_tag << " (" << body_remove_id << ")" << std::endl;
-  // decrementing the number of atoms in the body on the processor which owns the body.
-  body[body_remove_id].natoms--;
-
-  // storing all the atoms that have been remeshed on this timestep so that they can be deleted before the neighborlists are rebuilt.
-  // This is a separate vector to dlist since multiple dlists can be remeshed on a given timestep under a single rebuilding of the neighbor lists.
-  
-  
-  if (body[body_remove_id].natoms < 5) {
-  
-    std::cout << me << FRED(": No of atoms in body = ") << body[body_remove_id].natoms << std::endl;
-    error->one(FLERR,"Fix Rigid/Abrade has attempted to remesh a body ({}) with less than 5 atoms. ", body_remove_tag);
-    }
-
-  // Set abraded flag of body of removed atom so that it considered in areas_and_normals()
-  body[body_remove_id].abraded_flag = 1;
-
-
-// Get the local index of the atom to be removed 
-  tagint remove_id = atom->map(remove_tag);
-
-
-  // If the atom is stored on the processors that we set its associated body flags
-  // Marking that the atom no longer belongs to a body so that it is not processed in areas_and_normals
-  // Again, this is to prevent the need to repeatedly rebuild the neighbor lists each time an atom is removed.
-  
-  if (remove_id >= 0) {
+    // Reading in the tag of the atom in the dlist and its owning body 
+    remove_tag = dlist[dlist_i];
+    body_remove_tag = body_dlist[dlist_i];
     
-    if (atom2body[remove_id] < 0) error->one(FLERR,"Fix Rigid/Abrade has attempted to remesh an atom {} that does not belong to a rigid body" , remove_tag);
+    // storing all the atoms that have been remeshed on this timestep so that they can be deleted before the neighborlists are rebuilt.
+    // This is a separate vector to dlist since multiple dlists can be remeshed on a given timestep under a single rebuilding of the neighbor lists.
+    total_dlist.push_back(remove_tag);
 
-    bodytag[remove_id] = 0;
-    atom2body[remove_id] = -1;
-    
-    
+    // Get the local index of the atom to be removed and the index of the owning body
+    tagint remove_id = atom->map(remove_tag);
+    tagint body_remove_id = atom2body[atom->map(body_remove_tag)];    
+
+    // decrementing the number of atoms in the body 
+    body[body_remove_id].natoms--;
+  
+    // checking that there are enough atoms remaining to form a 3D closed boundary
+    if (body[body_remove_id].natoms < 5) {
+      std::cout << me << FRED(": No of atoms in body = ") << body[body_remove_id].natoms << std::endl;
+      error->one(FLERR,"Fix Rigid/Abrade has attempted to remesh a body ({}) with less than 5 atoms. ", body_remove_tag);
+      }
+
+    // Set abraded flag of body of removed atom so that it considered in subsequent areas_and_normals() calls
+    body[body_remove_id].abraded_flag = 1;
+
+    // If the atom is stored on the processors then set its associated body flags to mark that the it no longer belongs to a body 
+    // It is therefore not processed in areas_and_normals() and resetup_bodies_static()
+    // This prevents the need to repeatedly rebuild the neighbor lists each time an atom is removed during remesh().
+
+    if (remove_id >= 0) {    
+      if (atom2body[remove_id] < 0) error->one(FLERR,"Fix Rigid/Abrade has attempted to remesh an atom {} that does not belong to a rigid body" , remove_tag);
+      bodytag[remove_id] = 0;
+      atom2body[remove_id] = -1;
     }
   
-
   }
 
 
+  // ------------------------------------------- Breaking angles and constructing edges around the remesh boundary ------------------------------------------
+
   int nlocal = atom->nlocal;
-  
-  
-  std::cout << me << FCYN(": Breaking angles and constructing edges") << std::endl;
 
   // Break any angle which contains a target atom in dlist and store the type of angles used 
   int remesh_atype = -1;
@@ -2266,9 +1995,7 @@ void FixRigidAbrade::remesh(std::vector<int> dlist){
           }
       }
 
-
-    
-// Unassign angles here so they aren't included in the locally rebuilt topology
+      // Unassign angles so they aren't included in the locally rebuilt topology
       if (!found) i++;
       else {
         for (j = i; j < num_angle-1; j++) {
@@ -2280,70 +2007,48 @@ void FixRigidAbrade::remesh(std::vector<int> dlist){
         num_angle--;
       }
     }
-
+    
     atom->num_angle[m] = num_angle;
   }
 
 
-  // Edges are constructed locally and then reverse communicated back to the proc which owns the dlist atom
+  // Communicate these locally contructed edges back to the proc which owns the dlist atom
 
-  // print locally owned edges:
-
-// for (int i = 0; i < dlist.size(); i++){
-//     std::cout << me << ":PRE dlist atom: " << dlist[i] << std::endl;
-//     for (int j = 0; j < edges[i].size(); j++){
-//       std::cout << me << FRED(": PRE EDGE (") << edges[i][j][0] << ", "  << edges[i][j][1] << ") " << std::endl;
-//     }
-//   }
-
-
-  std::cout << me << ": communicating edges" << std::endl;
   commflag = EDGES;
   comm->reverse_comm(this);
 
-  std::cout << me << ": finished communicating edges" << std::endl;
-
-// for (int i = 0; i < dlist.size(); i++){
-//     std::cout << me << ":POST dlist atom: " << dlist[i] << std::endl;
-//     for (int j = 0; j < edges[i].size(); j++){
-//       std::cout << me << FGRN(": POST EDGE (") << edges[i][j][0] << ", "  << edges[i][j][1] << ") " << std::endl;
-//     }
-//   }
+  // Construct the boundary for each deleted atom in a CCW direction from the correspoinding edges (only on the proc which owns it)
 
   std::cout << me << FCYN(": Constructing Boundaries") << std::endl;
 
-    // Constructing the boundary for each deleted atom in a CCW direction from the correspoinding edges
-    for (int edge = 0; edge < edges.size(); edge++){
+  for (int edge = 0; edge < edges.size(); edge++){
 
-        if (edges[edge].size()){
+    if (edges[edge].size()){
 
-          int count = 2;
-          (boundaries[edge]).push_back(edges[edge][0][0]);
-          (boundaries[edge]).push_back(edges[edge][0][1]);
-          tagint current_atom = edges[edge][0][1];
+      int count = 2;
+      (boundaries[edge]).push_back(edges[edge][0][0]);
+      (boundaries[edge]).push_back(edges[edge][0][1]);
+      tagint current_atom = edges[edge][0][1];
 
-          while (count < edges[edge].size()){
-            for (int i = 0; i < edges[edge].size(); i++){
-              if (edges[edge][i][0] == current_atom) {
-                current_atom = edges[edge][i][1];
-                (boundaries[edge]).push_back(current_atom);
-                count ++;
-                if(count == edges[edge].size()) break;
-              }
-            }  
+      while (count < edges[edge].size()){
+        for (int i = 0; i < edges[edge].size(); i++){
+          if (edges[edge][i][0] == current_atom) {
+            current_atom = edges[edge][i][1];
+            (boundaries[edge]).push_back(current_atom);
+            count ++;
+            if(count == edges[edge].size()) break;
           }
-        }
+        }  
       }
+    }
+  }
 
 
 std::cout << me << FCYN(": Generating Angles") << std::endl;
 
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~ NEW ANGLE GENERATION START  ~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++){
 
 
-  // cycling through each atom to be removed and its assocaited boundary
   remove_tag = dlist[dlist_i];  
 
   // only generate new angles on the proc that owns the target atom
@@ -2353,7 +2058,7 @@ for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++){
   std::vector<tagint> boundary = boundaries[dlist_i];
   std::vector<tagint> temp_boundary;
        
-  // rearranging so that the first atom tag is the maximum (to create consistency across MPI processes)
+  // rearranging the boundary so that the first atom tag is the maximum (to create consistency across MPI processes)
     
   // finding index of max value in boundary.
   int max_tag_index = static_cast<int>(find(boundary.begin(), boundary.end(), (*max_element(boundary.begin(), boundary.end()))) - boundary.begin());
@@ -2361,13 +2066,11 @@ for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++){
    for (int i = 0; i < boundary.size(); i++) temp_boundary.push_back(boundary[(i+max_tag_index)%static_cast<int>(boundary.size())]);
    boundary = temp_boundary;
 
-    
     std::cout << me <<  FGRN(": Boundary for atom ") << remove_tag << FGRN(": max element = ") << max_tag_index <<": ";
     for (int q = 0; q < (boundary).size(); q++){
       std::cout << (boundary)[q] << " ";
     } std::cout << std::endl;
 
-  
 
   // Storing target atom's position in its body coordinates
   double removed_atom_position[3];
@@ -2377,75 +2080,55 @@ for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++){
 
   double origin_to_removed_atom[3];
     
-// std::cout << "Boundary: " << std::endl;
-// for (int q = 0; q < (boundary).size(); q++){
-//   std::cout << (boundary)[q] << " ";
-// } std::cout << std::endl;
 
-std::vector<std::vector<double>> boundary_coords;
+  std::vector<std::vector<double>> boundary_coords;
 
-// Popoulating boundary_coords with the displacents of each atom in the boundary
-for (int boundary_point = 0; boundary_point < (boundary).size(); boundary_point++){
-    boundary_coords.push_back({displace[atom->map((boundary)[boundary_point])][0], displace[atom->map((boundary)[boundary_point])][1], displace[atom->map((boundary)[boundary_point])][2]});
-    // std::cout << (boundary)[boundary_point] << ": " << displace[atom->map((boundary)[boundary_point])][0] << " " << displace[atom->map((boundary)[boundary_point])][1] <<  " "<< displace[atom->map((boundary)[boundary_point])][2] << std::endl;
-}
+  // Popoulating boundary_coords with the displacements of each atom in the boundary
+  for (int boundary_point = 0; boundary_point < (boundary).size(); boundary_point++){
+      boundary_coords.push_back({displace[atom->map((boundary)[boundary_point])][0], displace[atom->map((boundary)[boundary_point])][1], displace[atom->map((boundary)[boundary_point])][2]});
+  }
 
-double origin[3] = {0.0, 0.0, 0.0};
+  double origin[3] = {0.0, 0.0, 0.0};
 
-MathExtra::sub3(removed_atom_position, origin, origin_to_removed_atom);
+  MathExtra::sub3(removed_atom_position, origin, origin_to_removed_atom);
 
-double normal_len = MathExtra::len3(origin_to_removed_atom);
-origin_to_removed_atom[0] = origin_to_removed_atom[0]/normal_len;
-origin_to_removed_atom[1] = origin_to_removed_atom[1]/normal_len;
-origin_to_removed_atom[2] = origin_to_removed_atom[2]/normal_len;
+  double normal_len = MathExtra::len3(origin_to_removed_atom);
+  origin_to_removed_atom[0] = origin_to_removed_atom[0]/normal_len;
+  origin_to_removed_atom[1] = origin_to_removed_atom[1]/normal_len;
+  origin_to_removed_atom[2] = origin_to_removed_atom[2]/normal_len;
 
 
-// // Projecting the boundary_coords onto a plane defined by the vector connecting the COM to the removed atom
+  //  Projecting the boundary onto a plane defined by the vector connecting the COM to the removed atom centred on the removed atom 
+  // Equation of the plane defined by the removed atom and its normal
+  // ax + by + cz = d
 
-// std::vector<std::vector<double>> boundary_projected;
-// double v[3];
-// double dist;
+  double a_plane = origin_to_removed_atom[0];
+  double b_plane = origin_to_removed_atom[1];
+  double c_plane = origin_to_removed_atom[2];
+  double d_plane = MathExtra::dot3(removed_atom_position,origin_to_removed_atom);
 
-// // std::cout << " origin_to_removed_atom " << origin_to_removed_atom[0] << " " << origin_to_removed_atom[1] << " " << origin_to_removed_atom[2] << std::endl;
-// for (int i = 0; i < boundary_coords.size(); i++){
-//     double* point = &boundary_coords[i][0];
-//     MathExtra::sub3(point,removed_atom_position,v);
-//     dist = MathExtra::dot3(v,origin_to_removed_atom);
-//     // std::cout << "dist " << dist << std::endl;
-//     boundary_projected.push_back({point[0] - (dist*origin_to_removed_atom[0]), point[1] - (dist*origin_to_removed_atom[1]), point[2] - (dist*origin_to_removed_atom[2])});
-// }
+  std::vector<std::vector<double>> boundary_projected;
 
-//  Projecting the boundary onto a plane defined by the removed atoms normal and defining them in a 2D coordinate system centred on the removed atom alligned to the plane
-// Equation of the plane defined by the removed atom and its normal
-// ax + by + cz = d
+  for (int i = 0; i < boundary_coords.size(); i++){
+      double* point = &boundary_coords[i][0];
+      double k = d_plane - a_plane*point[0] - b_plane*point[1] - c_plane*point[2];
+      boundary_projected.push_back({(point[0] + k*a_plane),(point[1] + k*b_plane),(point[2] + k*c_plane)});
+  }
 
-double a_plane = origin_to_removed_atom[0];
-double b_plane = origin_to_removed_atom[1];
-double c_plane = origin_to_removed_atom[2];
-double d_plane = MathExtra::dot3(removed_atom_position,origin_to_removed_atom);
-
-std::vector<std::vector<double>> boundary_projected;
-
-for (int i = 0; i < boundary_coords.size(); i++){
-    double* point = &boundary_coords[i][0];
-    double k = d_plane - a_plane*point[0] - b_plane*point[1] - c_plane*point[2];
-    boundary_projected.push_back({(point[0] + k*a_plane),(point[1] + k*b_plane),(point[2] + k*c_plane)});
-}
-
-    std::vector<std::vector<double>> boundary_projected_2d;
-    //  deining new axis connecting the removed atom to the first point in the boundary
-    double e1[3];
-    double* first_point = &boundary_projected[0][0];
-    MathExtra::sub3(removed_atom_position, first_point, e1);
-    e1[0] = e1[0]/ MathExtra::len3(e1);
-    e1[1] = e1[1]/ MathExtra::len3(e1);
-    e1[2] = e1[2]/ MathExtra::len3(e1);
-    // second axis is at right angle alligned on the plane
-    double e2[3];
-    MathExtra::cross3(origin_to_removed_atom, e1, e2);
-    e2[0] = e2[0]/ MathExtra::len3(e2);
-    e2[1] = e2[1]/ MathExtra::len3(e2);
-    e2[2] = e2[2]/ MathExtra::len3(e2);
+  std::vector<std::vector<double>> boundary_projected_2d;
+  //  deining new axis connecting the removed atom to the first point in the boundary
+  double e1[3];
+  double* first_point = &boundary_projected[0][0];
+  MathExtra::sub3(removed_atom_position, first_point, e1);
+  e1[0] = e1[0]/ MathExtra::len3(e1);
+  e1[1] = e1[1]/ MathExtra::len3(e1);
+  e1[2] = e1[2]/ MathExtra::len3(e1);
+  // second axis is at a right angle alligned on the plane
+  double e2[3];
+  MathExtra::cross3(origin_to_removed_atom, e1, e2);
+  e2[0] = e2[0]/ MathExtra::len3(e2);
+  e2[1] = e2[1]/ MathExtra::len3(e2);
+  e2[2] = e2[2]/ MathExtra::len3(e2);
 
   for (int i = 0; i < boundary_projected.size(); i++){
     double* point = &boundary_projected[i][0];
@@ -2453,15 +2136,16 @@ for (int i = 0; i < boundary_coords.size(); i++){
   }
 
   boundary_projected = boundary_projected_2d;
-    
+      
+  // Start of remeshing scheme
 
-// Start of remeshing scheme
-std::vector<std::vector<std::vector<int>>> valid_meshes;
+  std::vector<std::vector<std::vector<int>>> valid_meshes;
 
-bool skip_permutation = false;
+  bool skip_permutation = false;
 
-// Considering each cyclic permutation
-for (int permutation = 0; permutation < boundary_coords.size(); permutation ++){
+  // Considering each cyclic permutation of the valid remeshing schemes
+  for (int permutation = 0; permutation < boundary_coords.size(); permutation ++){
+      
     // Setting the base atom for the first angle as the permutation (essentially shifting the starting position around the boundary_coords)
     int i = permutation;
 
@@ -2477,122 +2161,105 @@ for (int permutation = 0; permutation < boundary_coords.size(); permutation ++){
     // A boundary_coords of n atoms requires n-2 angles to fully mesh
     while (angles.size() < (boundary_coords.size()-2)){
 
-        if (skip_permutation) break;
+      if (skip_permutation) break;
 
-        for (int j = 0; j < (boundary_coords.size()-2); j++){
-           
-            // ----------------------------------------------------------------- Meshing inner boundary_coords: --------------------------------------------------------------------------
-            //  Note we only consider one inside boundary_coords. In theory, the inside boundary_coords could have its own inside boundary_coords... however, this recursion was deemed as a risk to stability
-            // If the originating atom (the permutation) is targeted then we have considered the full boundary_coords and have an inner_boundary_indexes (a void) may need meshing
-            if (permutation == (i+1+j)%boundary_coords.size()){
-                
-                // The meshing scheme is essentially the same but now consider a new inner_boundary_indexes formed from a subset of the overall boundary_coords
-                inner_boundary_indexes.push_back(i);
+      for (int j = 0; j < (boundary_coords.size()-2); j++){
+          
+        // ----------------------------------------------------------------- Meshing inner boundary_coords: --------------------------------------------------------------------------
+        //  Note we only consider one inside boundary_coords. In theory, the inside boundary_coords could have its own inside boundary_coords... however, this recursion was deemed as a risk to stability
+        // If the originating atom (the permutation) is targeted then we have considered the full boundary_coords and have an inner_boundary_indexes (a void) may need meshing
+        if (permutation == (i+1+j)%boundary_coords.size()){
+              
+          // The meshing scheme is essentially the same but now consider a new inner_boundary_indexes formed from a subset of the overall boundary_coords
+          inner_boundary_indexes.push_back(i);
 
-                // define new vector to hold the inner_angles
-                std::vector<std::vector<int>> inner_angles;
+          // define new vector to hold the inner_angles
+          std::vector<std::vector<int>> inner_angles;
 
-                // Defining new vector of positions for the inner boundaries
-                std::vector<std::vector<double>> inner_boundary;
-                std::vector<std::vector<double>> inner_boundary_projected;
-                
-                for (int atom = 0; atom < inner_boundary_indexes.size(); atom++){
-                    inner_boundary.push_back({boundary_coords[inner_boundary_indexes[atom]][0], boundary_coords[inner_boundary_indexes[atom]][1],boundary_coords[inner_boundary_indexes[atom]][2]});
-                    // std::cout << boundary_coords[inner_boundary_indexes[atom]][0] << " " << boundary_coords[inner_boundary_indexes[atom]][1] << " " << boundary_coords[inner_boundary_indexes[atom]][2] << std::endl;
-                    inner_boundary_projected.push_back({boundary_projected[inner_boundary_indexes[atom]][0], boundary_projected[inner_boundary_indexes[atom]][1],boundary_projected[inner_boundary_indexes[atom]][2]});
-                    }
+          // Defining new vector of positions for the inner boundaries
+          std::vector<std::vector<double>> inner_boundary;
+          std::vector<std::vector<double>> inner_boundary_projected;
+          
+          for (int atom = 0; atom < inner_boundary_indexes.size(); atom++){
+              inner_boundary.push_back({boundary_coords[inner_boundary_indexes[atom]][0], boundary_coords[inner_boundary_indexes[atom]][1],boundary_coords[inner_boundary_indexes[atom]][2]});
+              inner_boundary_projected.push_back({boundary_projected[inner_boundary_indexes[atom]][0], boundary_projected[inner_boundary_indexes[atom]][1],boundary_projected[inner_boundary_indexes[atom]][2]});
+              }
 
-                // Considering different cyclic permutations for the inner meshing
-                bool inner_valid_mesh;
-                
-                for (int inner_permutation = 0; inner_permutation < inner_boundary_indexes.size(); inner_permutation ++){
-                    int i_in = inner_permutation;
-                    inner_valid_mesh = true;
-                    inner_angles.clear();
+          // Considering different cyclic permutations for the inner meshing
+          bool inner_valid_mesh;
+          
+          for (int inner_permutation = 0; inner_permutation < inner_boundary_indexes.size(); inner_permutation ++){
+            int i_in = inner_permutation;
+            inner_valid_mesh = true;
+            inner_angles.clear();
 
-                    // Adding a counter to break the while loop after so many attemps
-                    int counter = 0;
+            // Adding a counter to break the while loop after so many attemps
+            int counter = 0;
 
-                    while (inner_angles.size() < (inner_boundary_indexes.size()-2)){
-
-                        for (int j_in = 0; j_in < (inner_boundary_indexes.size()-2); j_in++){
-
-                            if (angle_check(i_in , static_cast<int>((i_in+1+j_in)%inner_boundary.size()) ,inner_boundary, inner_boundary_projected, origin)){
-                                inner_angles.push_back({i_in, (i_in+1+j_in)%(static_cast<int>(inner_boundary_indexes.size())), (i_in+2+j_in)%(static_cast<int>(inner_boundary_indexes.size()))});
-
-                                if (inner_angles.size() == (inner_boundary_indexes.size()-2)){
-
-                                    break;
-                                    }
-                                }
-                            else {
-                                i_in = (i_in+1+j_in)%inner_boundary_indexes.size();
-                                break;
-                            }
-                        }
-                    
-                        if (inner_valid_mesh){
-                            break;
-                        }
-
-                        counter += 1;
-                        if (counter > inner_boundary_indexes.size()){
-                            valid_mesh = false;
-                            break;
-                        }
-                    }  
-                    
-                    if (inner_angles.size() == (inner_boundary_indexes.size()-2)){
-
-                        break;
-                    }
-
-                    
-
-                } 
-           
-            for (int angle = 0; angle < inner_angles.size(); angle ++){
-
-                angles.push_back({inner_boundary_indexes[inner_angles[angle][0]], inner_boundary_indexes[inner_angles[angle][1]], inner_boundary_indexes[inner_angles[angle][2]]});
-                }
-                
-
-            if ((inner_valid_mesh) && (angles.size() == (boundary_coords.size()-2))){
-
-
-                valid_mesh = true;
-                break;
-                }
-            else{
-                    valid_mesh = false;
-                    }
+            while (inner_angles.size() < (inner_boundary_indexes.size()-2)){
             
-            // ----------------------------------------------------------------- Finished Meshing inner boundary_coords: --------------------------------------------------------------------------
-            }
-
-            // We move along the outer boundary_coords, starting at i, connecting proceeding pairs of atoms into angles
-            if (angle_check(i , (i+1+j)%boundary_coords.size() ,boundary_coords, boundary_projected, origin)){
-                // If the angle is deemed valid, it is appeneded to the permutations angle list
-                angles.push_back({i, static_cast<int>((i+1+j)%boundary_coords.size()), static_cast<int>((i+2+j)%boundary_coords.size())});
-                // If enough angles have been defined to fully mesh the boundary_coords, we break and move to the next permutation
-                if (angles.size() == (boundary_coords.size()-2)){
+              for (int j_in = 0; j_in < (inner_boundary_indexes.size()-2); j_in++){
+            
+                if (angle_check(i_in , static_cast<int>((i_in+1+j_in)%inner_boundary.size()) ,inner_boundary, inner_boundary_projected, origin)){
+                  inner_angles.push_back({i_in, (i_in+1+j_in)%(static_cast<int>(inner_boundary_indexes.size())), (i_in+2+j_in)%(static_cast<int>(inner_boundary_indexes.size()))});
+                    if (inner_angles.size() == (inner_boundary_indexes.size()-2)){
+                      break;
+                    }
+                } else {
+                    i_in = (i_in+1+j_in)%inner_boundary_indexes.size();
                     break;
                 }
-            } 
-            
-            else {
-                // if no angle was formed for ther starting atom of the permutation we skip to the next permutation to minimise redundant computation
-                if (i == permutation && angles.empty()){
-                  skip_permutation = true;
-                }
-
-                // If no angle was formed we add the atom to the new inner_boundary_indexes which will need sewing 
-                inner_boundary_indexes.push_back(i);
-                // We shift the new starting atom to be the last atom which was targeted and repeat
-                i = (i+1+j)%boundary_coords.size();
+              } if (inner_valid_mesh){
                 break;
-            }
+              }
+              counter += 1;
+              if (counter > inner_boundary_indexes.size()){
+                valid_mesh = false;
+                break;
+              }
+            }    
+            if (inner_angles.size() == (inner_boundary_indexes.size()-2)){
+                break;
+            } 
+          } 
+          for (int angle = 0; angle < inner_angles.size(); angle ++){
+            angles.push_back({inner_boundary_indexes[inner_angles[angle][0]], inner_boundary_indexes[inner_angles[angle][1]], inner_boundary_indexes[inner_angles[angle][2]]});
+          }  
+          if ((inner_valid_mesh) && (angles.size() == (boundary_coords.size()-2))){
+              valid_mesh = true;
+              break;
+          } 
+          else{
+            valid_mesh = false;
+          }
+          
+          // ----------------------------------------------------------------- Finished Meshing inner boundary_coords: --------------------------------------------------------------------------
+        
         }
+
+        // We move along the outer boundary_coords, starting at i, connecting proceeding pairs of atoms into angles
+        if (angle_check(i , (i+1+j)%boundary_coords.size() ,boundary_coords, boundary_projected, origin)){
+          // If the angle is deemed valid, it is appeneded to the permutations angle list
+          angles.push_back({i, static_cast<int>((i+1+j)%boundary_coords.size()), static_cast<int>((i+2+j)%boundary_coords.size())});
+          // If enough angles have been defined to fully mesh the boundary_coords, we break and move to the next permutation
+          if (angles.size() == (boundary_coords.size()-2)){
+              break;
+          }
+        } 
+          
+        else {
+          // if no angle was formed for ther starting atom of the permutation we skip to the next permutation to minimise redundant computation
+          if (i == permutation && angles.empty()){
+            skip_permutation = true;
+          }
+
+          // If no angle was formed we add the atom to the new inner_boundary_indexes which will need sewing 
+          inner_boundary_indexes.push_back(i);
+          // We shift the new starting atom to be the last atom which was targeted and repeat
+          i = (i+1+j)%boundary_coords.size();
+          break;
+        }
+      }
     }
 
     if (skip_permutation){
@@ -2601,133 +2268,106 @@ for (int permutation = 0; permutation < boundary_coords.size(); permutation ++){
     }
 
     if (valid_mesh){
-        valid_meshes.push_back(angles);
+      valid_meshes.push_back(angles);
     }
-}
+  }
 
 
-// Printing failure the valid meshes
-if (valid_meshes.size() == 0){
+  // If no valid meshes are found we print and error
+  if (valid_meshes.size() == 0){
+    std::cout << " Atom: " << remove_tag << " (" << removed_atom_position[0] << ", " << removed_atom_position[1] << ", " << removed_atom_position[2] << ")" << " Boundary: " << std::endl;
+  for (int q = 0; q < (boundary).size(); q++){
+    std::cout << (boundary)[q] << " (" << boundary_coords[q][0] << ", " << boundary_coords[q][1] << ", " << boundary_coords[q][2] << ")" << std::endl;
+    } std::cout << std::endl;
 
-  std::cout << " Atom: " << remove_tag << " (" << removed_atom_position[0] << ", " << removed_atom_position[1] << ", " << removed_atom_position[2] << ")" << " Boundary: " << std::endl;
-
-for (int q = 0; q < (boundary).size(); q++){
-  std::cout << (boundary)[q] << " (" << boundary_coords[q][0] << ", " << boundary_coords[q][1] << ", " << boundary_coords[q][2] << ")" << std::endl;
-  } std::cout << std::endl;
-
-  error->one(FLERR,"Failed to remesh atom {}", remove_tag);
-}
+    error->one(FLERR,"Failed to remesh atom {}", remove_tag);
+  }
         
-        
+  // Cycling through valid meshes and selecting the one that minimises the standard deviation of its angles' aspect ratio
 
-// Cycling through valid meshes and selecting the one that minimises the standard deviation of its angles' aspect ratio
+  double min_std = 10000000000.0;
+  int best_choice = 0;
 
-double min_std = 10000000000.0;
-int best_choice = 0;
+  for (int mesh = 0; mesh < valid_meshes.size(); mesh++){
+      std::vector<double> aspect_ratios;
+      double aspect_sum = 0.0;
 
-for (int mesh = 0; mesh < valid_meshes.size(); mesh++){
-    std::vector<double> aspect_ratios;
-    double aspect_sum = 0.0;
+      for (int angles = 0; angles < valid_meshes[mesh].size(); angles++){
+          // Cycling through the angles in each mesh
+          double A[3], B[3], C[3];
+          A[0] = boundary_coords[valid_meshes[mesh][angles][0]][0];
+          A[1] = boundary_coords[valid_meshes[mesh][angles][0]][1];
+          A[2] = boundary_coords[valid_meshes[mesh][angles][0]][2];
 
-    for (int angles = 0; angles < valid_meshes[mesh].size(); angles++){
-        // Cycling through the angles in each mesh
-        double A[3], B[3], C[3];
-        A[0] = boundary_coords[valid_meshes[mesh][angles][0]][0];
-        A[1] = boundary_coords[valid_meshes[mesh][angles][0]][1];
-        A[2] = boundary_coords[valid_meshes[mesh][angles][0]][2];
+          B[0] = boundary_coords[valid_meshes[mesh][angles][1]][0];
+          B[1] = boundary_coords[valid_meshes[mesh][angles][1]][1];
+          B[2] = boundary_coords[valid_meshes[mesh][angles][1]][2];
 
-        B[0] = boundary_coords[valid_meshes[mesh][angles][1]][0];
-        B[1] = boundary_coords[valid_meshes[mesh][angles][1]][1];
-        B[2] = boundary_coords[valid_meshes[mesh][angles][1]][2];
+          C[0] = boundary_coords[valid_meshes[mesh][angles][2]][0];
+          C[1] = boundary_coords[valid_meshes[mesh][angles][2]][1];
+          C[2] = boundary_coords[valid_meshes[mesh][angles][2]][2];
 
-        C[0] = boundary_coords[valid_meshes[mesh][angles][2]][0];
-        C[1] = boundary_coords[valid_meshes[mesh][angles][2]][1];
-        C[2] = boundary_coords[valid_meshes[mesh][angles][2]][2];
-
-        double ab[3], bc[3], ca[3];
-        MathExtra::sub3(B,A,ab);
-        MathExtra::sub3(C,B,bc);
-        MathExtra::sub3(A,C,ca);
-        double a = MathExtra::len3(ab);
-        double b = MathExtra::len3(bc);
-        double c = MathExtra::len3(ca);
-        aspect_ratios.push_back((a*b*c)/((b+c-a)*(c+a-b)*(a+b-c)));
-        aspect_sum += ((a*b*c)/((b+c-a)*(c+a-b)*(a+b-c)));
-    }
-
-    // Calculating the std of of the mesh's aspect ratios (actually variance so we don't process the sqrt)
-
-    double aspect_mean = aspect_sum / aspect_ratios.size();
-    double point_minus_mean_sq = 0.0;
-    for (int a_r = 0; a_r < aspect_ratios.size(); a_r++){
-        point_minus_mean_sq += (aspect_ratios[a_r] - aspect_mean)*(aspect_ratios[a_r] - aspect_mean);
-    } 
-
-    double aspect_std = (point_minus_mean_sq/aspect_ratios.size());
-    // std::cout<< "AR " << sqrt(aspect_std) << std::endl;
-    if ((aspect_std) < (min_std * (1.0 - 0.01))){
-        min_std = aspect_std;
-        best_choice = mesh;
-    } 
-    aspect_ratios.clear();
-    aspect_sum = 0.0;
-}
-
-std::vector<std::vector<int>> best_choice_angles = valid_meshes[best_choice];
-
-    bool valid_permutation = true;
-    std::cout << me << ": best choice angles: " << std::endl;
-    for (int i = 0; i < (best_choice_angles).size(); i ++){
-      for (int j = 0; j < (best_choice_angles)[i].size(); j++){
+          double ab[3], bc[3], ca[3];
+          MathExtra::sub3(B,A,ab);
+          MathExtra::sub3(C,B,bc);
+          MathExtra::sub3(A,C,ca);
+          double a = MathExtra::len3(ab);
+          double b = MathExtra::len3(bc);
+          double c = MathExtra::len3(ca);
+          aspect_ratios.push_back((a*b*c)/((b+c-a)*(c+a-b)*(a+b-c)));
+          aspect_sum += ((a*b*c)/((b+c-a)*(c+a-b)*(a+b-c)));
       }
-        new_angles_list[dlist_i].push_back({(boundary)[(best_choice_angles)[i][0]], (boundary)[(best_choice_angles)[i][1]], (boundary)[(best_choice_angles)[i][2]]});
-        std::cout << (boundary)[(best_choice_angles)[i][0]] << " -> " << (boundary)[(best_choice_angles)[i][1]] << " -> " << (boundary)[(best_choice_angles)[i][2]] << std::endl;
-    }  
-    
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~ NEW ANGLE GENERATION END  ~~~~~~~~~~~~~~~~~~~~~~~~~~
-}
+
+      // Calculating the std of of the mesh's aspect ratios (actually variance so we don't process the sqrt)
+
+      double aspect_mean = aspect_sum / aspect_ratios.size();
+      double point_minus_mean_sq = 0.0;
+      for (int a_r = 0; a_r < aspect_ratios.size(); a_r++){
+          point_minus_mean_sq += (aspect_ratios[a_r] - aspect_mean)*(aspect_ratios[a_r] - aspect_mean);
+      } 
+
+      double aspect_std = (point_minus_mean_sq/aspect_ratios.size());
+      if ((aspect_std) < (min_std * (1.0 - 0.01))){
+          min_std = aspect_std;
+          best_choice = mesh;
+      } 
+      aspect_ratios.clear();
+      aspect_sum = 0.0;
+  }
+
+  std::vector<std::vector<int>> best_choice_angles = valid_meshes[best_choice];
+
+      bool valid_permutation = true;
+      std::cout << me << ": best choice angles: " << std::endl;
+      for (int i = 0; i < (best_choice_angles).size(); i ++){
+        for (int j = 0; j < (best_choice_angles)[i].size(); j++){
+        }
+          new_angles_list[dlist_i].push_back({(boundary)[(best_choice_angles)[i][0]], (boundary)[(best_choice_angles)[i][1]], (boundary)[(best_choice_angles)[i][2]]});
+          std::cout << (boundary)[(best_choice_angles)[i][0]] << " -> " << (boundary)[(best_choice_angles)[i][1]] << " -> " << (boundary)[(best_choice_angles)[i][2]] << std::endl;
+      }  
+      
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~ NEW ANGLE GENERATION END  ~~~~~~~~~~~~~~~~~~~~~~~~~~
+  }
 
 
-// Forward communicate the remeshing scheme (New angles) to the ghost bodies.
 
-std::cout << me  << ": communicating NEW_ANGLES " << std::endl;
-
-// Forward comm new_angles_list so they can be defined around central atoms which are locally stored
+  // Forward comm new_angles_list so they can be defined around central atoms which are locally stored
   commflag = NEW_ANGLES; 
   comm->forward_comm(this);
 
-  std::cout << me  << ": finished communicating NEW_ANGLES " << std::endl;
-
   // checking that all procs have the new angles:
-
   for (int i = 0; i < dlist.size(); i++){
     for (int j = 0; j < new_angles_list[i].size(); j++){
       std::cout << me << ": atom " << dlist[i] << " (" << new_angles_list[i][j][0] << ", " << new_angles_list[i][j][1] << ", " << new_angles_list[i][j][2] << ")" << std::endl;
     }
   }
 
-  // for (int i = 0; i < dlist.size(); i++){
-  //     if (atom->map(dlist[i]) < 0) std::cout << me << FRED(": pre forward angle types = ") << FRED(" [") << dlist[i] << FRED(" / ") << new_angles_type[i] << FRED("]") << std::endl;
-  //     else if (atom->map(dlist[i]) < nlocal) std::cout << me << FRED(": pre forward angle types = ") << FGRN(" [") << dlist[i] << FGRN(" / ") << new_angles_type[i] << FGRN("]") << std::endl;
-  //     else std::cout << me << FRED(": pre forward angle types = ") <<FYEL(" [") << dlist[i] <<FYEL(" / ") << new_angles_type[i] <<FYEL("]") << std::endl;
-  // }
-
-
+  // TODO: This can probably be lumped into NEW_ANGLES comm
   commflag = NEW_ANGLES_TYPES;
   comm->reverse_comm(this);
 
-
-// for (int i = 0; i < dlist.size(); i++){
-//       if (atom->map(dlist[i]) < 0) std::cout << me << FYEL(": mid forward angle types = ") << FRED(" [") << dlist[i] << FRED(" / ") << new_angles_type[i] << FRED("]") << std::endl;
-//       else if (atom->map(dlist[i]) < nlocal) std::cout << me << FYEL(": mid forward angle types = ") << FGRN(" [") << dlist[i] << FGRN(" / ") << new_angles_type[i] << FGRN("]") << std::endl;
-//       else std::cout << me << FYEL(": mid forward angle types = ") <<FYEL(" [") << dlist[i] <<FYEL(" / ") << new_angles_type[i] <<FYEL("]") << std::endl;
-  // }
-
-
-
   commflag = NEW_ANGLES_TYPES;
   comm->forward_comm(this);
-
 
   for (int i = 0; i < dlist.size(); i++){
       if (atom->map(dlist[i]) < 0) std::cout << me << FGRN(": post forward angle types = ") << FRED(" [") << dlist[i] << FRED(" / ") << new_angles_type[i] << FRED("]") << std::endl;
@@ -2735,57 +2375,47 @@ std::cout << me  << ": communicating NEW_ANGLES " << std::endl;
       else std::cout << me << FGRN(": post forward angle types = ") <<FYEL(" [") << dlist[i] <<FYEL(" / ") << new_angles_type[i] <<FYEL("]") << std::endl;
   }
 
+  // create angle around atom m which is a locally owned atom and the central atom in the angle -  modified from fix_bond_create.cpp
 
-// // Create angles taken from fix_bond_create.cpp
-// create angle around atom m which is a locally owned atom and the central atom in the angle
+  for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++){ 
+    for (int a = 0; a < (new_angles_list[dlist_i].size()); a++){
 
-for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++){ 
-  for (int a = 0; a < (new_angles_list[dlist_i].size()); a++){
+      // Skip the new angle if the central atom is not locally owned (and not a ghost atom)    
+      int m = atom->map(new_angles_list[dlist_i][a][1]);
+      if ((m < 0) || (m >= nlocal)) continue; 
 
+      // if atom is locally owned then it should have an assocaited angle type assigned to it
+      if (new_angles_type[dlist_i] == -1) {
+        std::cout << me << ": dlist atom: " << dlist[dlist_i] << ", angle type: " << new_angles_type[dlist_i] << std::endl;
+        error->one(FLERR,"Remeshed angle type not set for dlist atom {}", dlist[dlist_i]);}
 
-    // Skip the new angle if the central atom is not locally owned (not a ghost atom)
-    
-    int m = atom->map(new_angles_list[dlist_i][a][1]);
-    if ((m < 0) || (m >= nlocal))  { // std::cout << me << ": skipping angle angle: " << new_angles_list[dlist_i][a][0] << "->" << new_angles_list[dlist_i][a][1] << "->" << new_angles_list[dlist_i][a][2] << " around atom " FRED("(")<< atom->tag[m] <<  FRED(")") << std::endl; 
-      continue; }
+      // checking that the other atoms in the angle are stored as ghost atoms
+      if (atom->map(new_angles_list[dlist_i][a][0]) <  0 || atom->map(new_angles_list[dlist_i][a][1]) < 0 || atom->map(new_angles_list[dlist_i][a][2]) < 0) error->one(FLERR,"Fix Rigid/Abrade re-meshing needs ghost atoms from further away");
 
-    // if atom is locally owned then it should have an assocaited angle type assigned to it
-    if (new_angles_type[dlist_i] == -1) {
-      std::cout << me << ": dlist atom: " << dlist[dlist_i] << ", angle type: " << new_angles_type[dlist_i] << std::endl;
-      error->one(FLERR,"Remeshed angle type not set for dlist atom {}", dlist[dlist_i]);}
+      // reading in proc angle information for atom central atom in new angle
+      int num_angle = atom->num_angle[m];
+      int *angle_type = atom->angle_type[m];
+      tagint *angle_atom1 = atom->angle_atom1[m];
+      tagint *angle_atom2 = atom->angle_atom2[m];
+      tagint *angle_atom3 = atom->angle_atom3[m];
 
-    // checking that the other atoms in the angle are stored as ghost atoms
-    if (atom->map(new_angles_list[dlist_i][a][0]) <  0 || atom->map(new_angles_list[dlist_i][a][1]) < 0 || atom->map(new_angles_list[dlist_i][a][2]) < 0) error->one(FLERR,"Fix Rigid/Abrade re-meshing needs ghost atoms from further away");
+      // check there is space to add an extra angle for the atom
+      if (num_angle >= atom->angle_per_atom) error->one(FLERR,"Fix Rigid/Abrade induced too many angles per atom during remeshing");
+      else {
+        if (m < 0 || m >= nlocal) std::cout << me << FRED(": Defining angle around non-locally owned atom!: ") << new_angles_list[dlist_i][a][0] << "->" << new_angles_list[dlist_i][a][1] << "->" << new_angles_list[dlist_i][a][2] << " around atom " FRED("(")<< atom->tag[m] <<  FRED(")") <<  " with type: " << new_angles_type[dlist_i] << std::endl; 
+        else std::cout << me << FGRN(": Defining angle: ") << new_angles_list[dlist_i][a][0] << "->" << new_angles_list[dlist_i][a][1] << "->" << new_angles_list[dlist_i][a][2] << " around atom " FGRN("(")<< atom->tag[m] <<  FGRN(")") <<   " with type: " << new_angles_type[dlist_i] << std::endl; 
 
-
-    // reading in proc angle information for atom central atom in new angle
-    int num_angle = atom->num_angle[m];
-    int *angle_type = atom->angle_type[m];
-    tagint *angle_atom1 = atom->angle_atom1[m];
-    tagint *angle_atom2 = atom->angle_atom2[m];
-    tagint *angle_atom3 = atom->angle_atom3[m];
-
-    // check there is space to add an extra angle for the atom
-
-    if (num_angle >= atom->angle_per_atom) error->one(FLERR,"Fix Rigid/Abrade induced too many angles per atom during remeshing");
-    else {
+        // define angle about central atom
+        angle_type[num_angle] = new_angles_type[dlist_i];
       
-      if (m < 0 || m >= nlocal) std::cout << me << FRED(": Defining angle around non-locally owned atom!: ") << new_angles_list[dlist_i][a][0] << "->" << new_angles_list[dlist_i][a][1] << "->" << new_angles_list[dlist_i][a][2] << " around atom " FRED("(")<< atom->tag[m] <<  FRED(")") <<  " with type: " << new_angles_type[dlist_i] << std::endl; 
-      else std::cout << me << FGRN(": Defining angle: ") << new_angles_list[dlist_i][a][0] << "->" << new_angles_list[dlist_i][a][1] << "->" << new_angles_list[dlist_i][a][2] << " around atom " FGRN("(")<< atom->tag[m] <<  FGRN(")") <<   " with type: " << new_angles_type[dlist_i] << std::endl; 
+        angle_atom1[num_angle] = new_angles_list[dlist_i][a][0];
+        angle_atom2[num_angle] = new_angles_list[dlist_i][a][1];
+        angle_atom3[num_angle] =  new_angles_list[dlist_i][a][2];
+        num_angle++;
+      }
 
-
-      // define angle about central atom
-      angle_type[num_angle] = new_angles_type[dlist_i];
+      atom->num_angle[m] = num_angle;
     
-      angle_atom1[num_angle] = new_angles_list[dlist_i][a][0];
-      angle_atom2[num_angle] = new_angles_list[dlist_i][a][1];
-      angle_atom3[num_angle] =  new_angles_list[dlist_i][a][2];
-      num_angle++;
-    }
-
-    atom->num_angle[m] = num_angle;
-   
-
     }
   }
 
@@ -2806,8 +2436,6 @@ for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++){
   int angle_count = 0;
   overflow_anglelist.clear();
 
-  // std::cout << me <<  ":   remesh: maxangle " << neighbor->nanglelist << std::endl;
-
   // cycle through each atom coreesponding to each local atom
   for (i = 0; i < nlocal; i++)
     for (m = 0; m < num_angle[i]; m++) {
@@ -2816,35 +2444,26 @@ for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++){
       atom2 = atom->map(angle_atom2[i][m]);
       atom3 = atom->map(angle_atom3[i][m]);
 
-      // atom1 = domain->closest_image(i, atom1);
-      // atom2 = domain->closest_image(i, atom2);
-      // atom3 = domain->closest_image(i, atom3);
-
-        // place angle in the existing anglelist since there is space
+        // place angle in the existing anglelist if there is space
         if (angle_count < nanglelist) {
           
           anglelist[angle_count][0] = atom1;
           anglelist[angle_count][1] = atom2;
           anglelist[angle_count][2] = atom3;
           anglelist[angle_count][3] = angle_type[i][m];
-          // std::cout << me <<  ": appending angle " << (angle_count + 1) << "/" << nanglelist << " ( " << angle_atom1[i][m] << " -> " << angle_atom2[i][m] << " -> " << angle_atom3[i][m] << ")" <<  std::endl;
         } 
         
-        // append angle onto the overflow vector since there is no more space in anglelist
+        // append angle onto the overflow vector if there is no more space in anglelist
         else {
           overflow_anglelist.push_back({atom1, atom2, atom3, angle_type[i][m]});
-          // std::cout << me << ": appending overflow angle " << (angle_count + 1) << "/" << nanglelist << " ( " << angle_atom1[i][m] << " -> " << angle_atom2[i][m] << " -> " << angle_atom3[i][m] << ")" <<  std::endl;
         }
       
       angle_count++;
     }
 
-  // std::cout << me <<  ":   remesh: new nanglelist (" << angle_count << " / " << neighbor->nanglelist <<  ")" << std::endl;
-
   remesh_angle_proc_difference = (angle_count - neighbor->nanglelist);
   if (remesh_angle_proc_difference < 0) remesh_overflow_threshold = remesh_angle_proc_difference;
 
-  // std::cout << me <<  ":   remesh: new nanglelist (" << angle_count << " / " << neighbor->nanglelist <<  ") remesh_overflow_threshold = "<< remesh_overflow_threshold << std::endl;
   // We now have a locally rebuilt topology which may spill over into an overflow list
 
   // The original angles assigned to the dlist atom are not included in the locally rebuilt topology
@@ -2853,43 +2472,12 @@ for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++){
 
   // dlist atoms are not formally removed yet, therefore there is no need to adjust vertexdata[i][], displce[i][] etc. yet
 
-
-
   // now need to cycle through angle lists for the locally rebuild topology:
   //      - dont exceed number of angles if it is less than neighbor->nanglelist
   //      - if overflow exists, cycle through that aswell
 
-  // Test:
 
-  std::cout << me << FBLU(" [neighbor->nanglelist, remesh_overflow_threshold, overflow_anglelist.size()] = (") << neighbor->nanglelist << FMAG(",") << remesh_overflow_threshold << FMAG(",") << overflow_anglelist.size() << FMAG(") = ") << neighbor->nanglelist + remesh_overflow_threshold + overflow_anglelist.size() << std::endl;
-
-  int i1, i2, i3;
-  for (int n = 0; n < (neighbor->nanglelist + remesh_overflow_threshold + overflow_anglelist.size()); n++) {
-    
-    // Storing each atom in the angle
-    if (n + 1 <= (nanglelist + remesh_overflow_threshold)){
-      i1 = anglelist[n][0];
-      i2 = anglelist[n][1];
-      i3 = anglelist[n][2];
-    } else{    
-      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step();
-      i1 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][0];
-      i2 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][1];
-      i3 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][2];
-    }
-  
-    // std::cout << me << ": Angle [" << n+1 << "]: " << atom->tag[i1] << "->" << atom->tag[i2] << "->" << atom->tag[i3] << std::endl;
-  }
-  
-    // TODO: check if this is necessary, since procs that have reached this point will have their abraded flag set.
-    // commflag = PROC_ABRADED_FLAG;
-    // comm->reverse_comm(this,1);
-    
-    // commflag = PROC_ABRADED_FLAG;
-    // comm->forward_comm(this,1);
-
-
-
+  // Recall areas_and_normals() which can in turn recall remesh() if the surface atoms are still too crowded
   areas_and_normals();
   }
 
@@ -2898,8 +2486,6 @@ for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++){
 void FixRigidAbrade::compute_forces_and_torques()
 {
   int i,ibody;
-
-  //check(3);
 
   // sum over atoms to get force and torque on rigid body
 
@@ -2938,23 +2524,6 @@ void FixRigidAbrade::compute_forces_and_torques()
     tcm[2] += dx*f[i][1] - dy*f[i][0];
   }
 
-  // // extended particles add their torque to torque of body
-
-  // if (extended) {
-  //   double **torque = atom->torque;
-
-  //   for (i = 0; i < nlocal; i++) {
-  //     if (atom2body[i] < 0) continue;
-
-  //     if (eflags[i] & TORQUE) {
-  //       tcm = body[atom2body[i]].torque;
-  //       tcm[0] += torque[i][0];
-  //       tcm[1] += torque[i][1];
-  //       tcm[2] += torque[i][2];
-  //     }
-  //   }
-  // }
-
   // reverse communicate fcm, torque of all bodies
 
   commflag = FORCE_TORQUE;
@@ -2992,9 +2561,6 @@ void FixRigidAbrade::compute_forces_and_torques()
 /* ---------------------------------------------------------------------- */
 
 void FixRigidAbrade::final_integrate(){
-
-  if (!me)
-  std::cout << me << FYEL(": -------------------- CALLING FINAL_INTEGRATE(), t = " << update->ntimestep << "  --------------------") << std::endl;
 
   double dtfm;
 
@@ -3046,27 +2612,15 @@ void FixRigidAbrade::final_integrate(){
   double body_displace_vel[3];
 
 
-  // reverse comm vertex data and then forward comm 
-
-
   for (int i = 0; i < nlocal; i++) {
     
     // Checking that atom i is in a rigid body
     if (atom2body[i] < 0) continue;
 
-    
     // Checking that atom i is being abraded
     global_displace_vel[0] = vertexdata[i][4];
     global_displace_vel[1] = vertexdata[i][5];
     global_displace_vel[2] = vertexdata[i][6];
-
-    // TODO: REMOVE
-
-    // if (fabs(global_displace_vel[0]) < TOLERANCE) global_displace_vel[0] = 0.0;
-    // if (fabs(global_displace_vel[1]) < TOLERANCE) global_displace_vel[1] = 0.0;
-    // if (fabs(global_displace_vel[2]) < TOLERANCE) global_displace_vel[2] = 0.0;
-
-    // std::cout << me << ": atom " << atom->tag[i] << " displacement vel = [" << global_displace_vel[0] << ", " << global_displace_vel[1] << ", " << global_displace_vel[2] << "] " << std::endl;
 
     if (!MathExtra::len3(global_displace_vel)) continue;
 
@@ -3074,20 +2628,16 @@ void FixRigidAbrade::final_integrate(){
     Body *b = &body[atom2body[i]];
     b->abraded_flag = 1;
 
-    // std::cout << me << BOLD(FBLU(" setting abraded flag ")) << std::endl;
     // NOTE: If storing normals in global coordinates, the normals must always be recalculated to reflect the updated positions of atoms
     // If we are storing in body coordinates they only need updating following an abrasion 
 
     // Convert displacement velocities from global coordinates to body coordinates 
     MathExtra::transpose_matvec(b->ex_space,b->ey_space,b->ez_space, global_displace_vel, body_displace_vel);
 
-    
-    
     // Integrate the position of atom i within the body by its displacement velocity
     displace[i][0] += dtv * body_displace_vel[0];
     displace[i][1] += dtv * body_displace_vel[1];
     displace[i][2] += dtv * body_displace_vel[2];
-
 
     // Update the cumulative displacement of each atom
     vertexdata[i][7] += sqrt( ((dtv * body_displace_vel[0])*(dtv * body_displace_vel[0])) + ((dtv * body_displace_vel[1])*(dtv * body_displace_vel[1])) + ((dtv * body_displace_vel[2])*(dtv * body_displace_vel[2])));
@@ -3124,40 +2674,36 @@ void FixRigidAbrade::final_integrate(){
     }
   }
 
-      // Both reverse and forward communication are required to consistently set the abraded_flag for both owned and ghost bodies across all processors
-      
-        commflag = ABRADED_FLAG;
-        comm->reverse_comm(this,1);
+  // reverse and forward communication are required to consistently set the abraded_flag for both owned and ghost bodies across all processors
 
-        commflag = ABRADED_FLAG;
-        comm->forward_comm(this,1);
-        
-        // recalculate properties and normals for each abraded body  
-        if (dynamic_flag) resetup_bodies_static();
+  commflag = ABRADED_FLAG;
+  comm->reverse_comm(this,1);
 
-        // if resetup_bodies_static() is not called then displace[i] is not communicated to ghosts.
-        else{
-          commflag = DISPLACE;
-          comm->forward_comm(this,3);
-        }
+  commflag = ABRADED_FLAG;
+  comm->forward_comm(this,1);
+  
+  // recalculate properties and normals for each abraded body  
+  if (dynamic_flag) resetup_bodies_static();
 
-        // recalcaulte areas and normals using the updated body coordinates stored in displace[i]
-        areas_and_normals();
+  // if resetup_bodies_static() is not called then displace[i] is not communicated to ghosts.
+  else{
+    commflag = DISPLACE;
+    comm->forward_comm(this,3);
+  }
+
+  // recalculate areas and normals using the updated body coordinates stored in displace[i] (also check if remeshing is required)
+  areas_and_normals();
     
-
-    // Setting the displacement velocities and wear energy of all atoms back to 0
-    for (int i = 0; i < nlocal; i++){
-      vertexdata[i][4] = 0.0;
-      vertexdata[i][5] = 0.0;
-      vertexdata[i][6] = 0.0;
-    }
+  // Setting the displacement velocities and wear energy of all atoms back to 0
+  for (int i = 0; i < nlocal; i++){
+    vertexdata[i][4] = 0.0;
+    vertexdata[i][5] = 0.0;
+    vertexdata[i][6] = 0.0;
+  }
         
-    // setting all abraded_flags for owned and ghost bodies back to 0 in preparation for the following timestep
-    for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody ++) 
-      body[ibody].abraded_flag = 0;
-
-if (!me)
-std::cout << me << FGRN(": -------------------- FINISHED CALLING FINAL_INTEGRATE(), t = " << update->ntimestep << "  --------------------") << std::endl;
+  // setting all abraded_flags for owned and ghost bodies back to 0 in preparation for the following timestep
+  for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody ++) 
+    body[ibody].abraded_flag = 0;
 
 }
 
@@ -3166,77 +2712,55 @@ std::cout << me << FGRN(": -------------------- FINISHED CALLING FINAL_INTEGRATE
 
 void FixRigidAbrade::end_of_step(){
     
-    if(!me)
-    std::cout << me << FYEL(": -------------------- CALLING END_OF_STEP(), t = " << update->ntimestep << "  --------------------") << std::endl;
-  
     
-    // std::cout << me << ": global flag: " << global_remesh_flag << std::endl;
-    if (remesh_rebuild_flag){
-    
-    // std::cout << me << FCYN(" PRE [atom->nangles, neighbor->nanglelist, remesh_overflow_threshold, overflow_anglelist.size()] = (") << atom->nangles << FMAG(",") << neighbor->nanglelist << FMAG(",") << remesh_overflow_threshold << FMAG(",") << overflow_anglelist.size() << FMAG(") = ") << neighbor->nanglelist + remesh_overflow_threshold + overflow_anglelist.size() << " ||||  atoms->nlocal: " <<  atom->nlocal << ",  atom->natoms: " <<  atom->natoms << ",  atom->nghost: " <<  atom->natoms << std::endl;
-  
+  // if remeshing has been processed on the current timestep we rebuild the neighbor list and formally remove dlist atoms
+  if (remesh_rebuild_flag){    
+
+    // decrement atom->nangles by global number of angle change
+    int all;
+    MPI_Allreduce(&remesh_angle_proc_difference, &all,1,MPI_INT,MPI_SUM,world);
+    atom->nangles += all;
+
+
+    // delete local atoms that have remove_tag and reset nlocal
     int nlocal = atom->nlocal;
+    AtomVec *avec = atom->avec;
 
+    int i = 0;
+    int removed_count = 0;
+    while (i < nlocal) {
+      if (count(total_dlist.begin(), total_dlist.end(), atom->tag[i])) {
+        std::cout << me << ": removing atom " << atom->tag[i] << std::endl;
+        removed_count ++;
+        avec->copy(nlocal - 1, i, 1); // adjusting vertexdata[i][n], image flags, displace, unwraped since avec->copy(nlocal - 1, i, 1) also invokes fix rigid/abrade's copy_arrays()
+        nlocal--;
+      } else
+          i++;
+    } 
+  
+    std::cout << me << BOLD(": Removed: ") << removed_count << BOLD(" atoms") << std::endl;
 
-  // decrement atom->nangles by global number of angle change
-  int all;
-  MPI_Allreduce(&remesh_angle_proc_difference, &all,1,MPI_INT,MPI_SUM,world);
-  atom->nangles += all;
+    int remove_count_all = 0;
+    MPI_Allreduce(&removed_count, &remove_count_all, 1, MPI_LMP_BIGINT, MPI_SUM, world);
 
+    if (me == 0) std::cout << BOLD("Total remove count = ") << remove_count_all << std::endl;
 
-  // delete local atoms that have remove_tag
-  // reset nlocal
+    // resetting nlocal
+    atom->nlocal = nlocal;
 
-  AtomVec *avec = atom->avec;
+    // reset atom->natoms and also topology counts
+    bigint nblocal = atom->nlocal;
+    MPI_Allreduce(&nblocal, &atom->natoms, 1, MPI_LMP_BIGINT, MPI_SUM, world);
 
-  int i = 0;
-  int removed_count = 0;
-  while (i < nlocal) {
-    if (count(total_dlist.begin(), total_dlist.end(), atom->tag[i])) {
-      std::cout << me << ": removing atom " << atom->tag[i] << std::endl;
-      removed_count ++;
-      avec->copy(nlocal - 1, i, 1);
-      // also adjusting vertexdata[i][n], image flags, displace, unwraped since avec->copy(nlocal - 1, i, 1) also invokes fix rigid/abrade's copy_arrays()
-      nlocal--;
+    // reset atom->map if it exists
+    // set nghost to 0 so old ghosts of deleted atoms won't be mapped
+    if (atom->map_style != Atom::MAP_NONE) {
+      atom->nghost = 0;
+      atom->map_init();
+      atom->map_set();
+    }
 
-      // also decrement the number of atoms in the body
-      // TODO: Forward Communicate this
-
-      // body[atom2body[i]].natoms--;
-    } else
-      i++;
-  } std::cout << me << BOLD(": Removed: ") << removed_count << BOLD(" atoms") << std::endl;
-
-
-  int remove_count_all = 0;
-  MPI_Allreduce(&removed_count, &remove_count_all, 1, MPI_LMP_BIGINT, MPI_SUM, world);
-
-if (me == 0) std::cout << BOLD("Total remove count = ") << remove_count_all << std::endl;
-
-  atom->nlocal = nlocal;
-
-  // reset atom->natoms and also topology counts
-  bigint nblocal = atom->nlocal;
-  MPI_Allreduce(&nblocal, &atom->natoms, 1, MPI_LMP_BIGINT, MPI_SUM, world);
-
-
-  // reset atom->map if it exists
-  // set nghost to 0 so old ghosts of deleted atoms won't be mapped
-
-  if (atom->map_style != Atom::MAP_NONE) {
-    atom->nghost = 0;
-    atom->map_init();
-    atom->map_set();
-  }
-
-
-// Although costly, the neighbor lists must be rebuilt following each remeshing as well as any histories
-// This has been limited to once on a remeshing timestep rather than for each time an atom is removed... as was previously the case.
-    
-
-
-    // std::vector<Fix *> fix_history_list = modify->get_fix_by_style("NEIGH_HISTORY");
-    
+    // Getting a list of fixes so their pre_neighbor() and post_neighbor() functions can also be called
     std::vector<Fix *> fix_list = modify->get_fix_list();
 
     // rebuilding neighbor lists
@@ -3250,51 +2774,48 @@ if (me == 0) std::cout << BOLD("Total remove count = ") << remove_count_all << s
     for (auto & fix_i : fix_list) fix_i->pre_neighbor();
     neighbor->build(1);
     for (auto & fix_i : fix_list) fix_i->post_neighbor();
-    
-    neighbor->ago = -1; // will get incremented to 0 on next timestep following neighbor->decide()
-    // This carries this rebuild over into the next timestep for fixes (such as rigid/wall/region) that dont have a post_neighbor() function
-    // but which still check if a remeshing has happened through neighbor->ago == 0
-    
+  
+
+    // Set that the neighbor list was last updates -1 timesteps ago
+    // This carries this rebuild over into the next timestep for fixes (such as rigid/wall/region) that dont have a post_neighbor() function but which still check if a remeshing has happened through neighbor->ago == 0  
+    // If the neighbor list is rebuilt on the next step this is simply set to 0 then, if not it is incremented in neighbor->decide() to 0, thus carrying forward this rebuild into the next timestep
+    neighbor->ago = -1; 
+  
+    // clearing remeshing arrays and resetting flags
     dlist.clear();
     body_dlist.clear();
     total_dlist.clear();
-    
+  
     proc_remesh_flag = 0;
     global_remesh_flag = 0;
     remesh_rebuild_flag = 0;
-    
+
     remesh_angle_proc_difference = 0;
     remesh_overflow_threshold = 0;
     overflow_anglelist.clear();
+    
+  
     
     // Need to forward comm the bodies so that reset_atom2body can be assigned.
     nghost_body = 0;
     commflag = FULL_BODY;
     comm->forward_comm(this);
-    
+  
+    // TODO: check if this is required? Is it not handled by avec->copy?
     // reset interia, volume, mass, and most importantly the COM, principal axes, and displace[i] used in areas_and_normals()
     if (dynamic_flag) {
         resetup_bodies_static();
         areas_and_normals();
         }
 
-    
+  
     // all other vertexdata[i][>3] are only accessed for ghost atoms. reset them here just as a precaution
     for (int i = nlocal; i < (atom->nlocal + atom->nghost); i ++){
-  
-    vertexdata[i][4] = vertexdata[i][5] = vertexdata[i][6] = 0.0; // displacement velocity (x,y,z)
-    vertexdata[i][7] = 0.0; // cumulative displacement
-    vertexdata[i][8] = 0.0; // Cumulative Wear Energy 
-    vertexdata[i][9] = 10000000000.0; // Minimum number of timesteps of elastic interaction preceeding a plastic deformation
-    vertexdata[i][10] = -1.0; // initial timestep of current elastic interation (-1.0 if no force acting upon atom)
-    vertexdata[i][11] = 0.0; // Elastic Interaction Flag (0 if no elastic/plastic interactions across the whole run)
-    vertexdata[i][12] = 0.0; // Plastic Interaction Flag (0 if no plastic interactions across the whole run - no abrasion)
+      vertexdata[i][4] = vertexdata[i][5] = vertexdata[i][6] = 0.0; // displacement velocity (x,y,z)
+      vertexdata[i][7] = 0.0; // cumulative displacement
+      vertexdata[i][8] = 0.0; // Cumulative Wear Energy 
     }
-
-    // debug_remesh_once = 0;
-    }
-
-// std::cout << me << FGRN(": -------------------- FINISHED CALLING END_OF_STEP(), t = " << update->ntimestep << "  --------------------") << std::endl;
+  }
 }
 
 
@@ -3626,69 +3147,6 @@ void FixRigidAbrade::set_xv()
     b->xgc[2] += b->xcm[2];
   }
 
-  // // set orientation, omega, angmom of each extended particle
-
-  // if (extended) {
-  //   double theta_body,theta;
-  //   double *shape,*quatatom,*inertiaatom;
-
-  //   AtomVecEllipsoid::Bonus *ebonus;
-  //   if (avec_ellipsoid) ebonus = avec_ellipsoid->bonus;
-  //   AtomVecLine::Bonus *lbonus;
-  //   if (avec_line) lbonus = avec_line->bonus;
-  //   AtomVecTri::Bonus *tbonus;
-  //   if (avec_tri) tbonus = avec_tri->bonus;
-  //   double **omega = atom->omega;
-  //   double **angmom = atom->angmom;
-  //   double **mu = atom->mu;
-  //   int *ellipsoid = atom->ellipsoid;
-  //   int *line = atom->line;
-  //   int *tri = atom->tri;
-
-  //   for (int i = 0; i < nlocal; i++) {
-  //     if (atom2body[i] < 0) continue;
-  //     Body *b = &body[atom2body[i]];
-
-  //     if (eflags[i] & SPHERE) {
-  //       omega[i][0] = b->omega[0];
-  //       omega[i][1] = b->omega[1];
-  //       omega[i][2] = b->omega[2];
-  //     } else if (eflags[i] & ELLIPSOID) {
-  //       shape = ebonus[ellipsoid[i]].shape;
-  //       quatatom = ebonus[ellipsoid[i]].quat;
-  //       MathExtra::quatquat(b->quat,orient[i],quatatom);
-  //       MathExtra::qnormalize(quatatom);
-  //       ione[0] = EINERTIA*rmass[i] * (shape[1]*shape[1] + shape[2]*shape[2]);
-  //       ione[1] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[2]*shape[2]);
-  //       ione[2] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[1]*shape[1]);
-  //       MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
-  //       MathExtra::omega_to_angmom(b->omega,exone,eyone,ezone,ione,angmom[i]);
-  //     } else if (eflags[i] & LINE) {
-  //       if (b->quat[3] >= 0.0) theta_body = 2.0*acos(b->quat[0]);
-  //       else theta_body = -2.0*acos(b->quat[0]);
-  //       theta = orient[i][0] + theta_body;
-  //       while (theta <= -MY_PI) theta += MY_2PI;
-  //       while (theta > MY_PI) theta -= MY_2PI;
-  //       lbonus[line[i]].theta = theta;
-  //       omega[i][0] = b->omega[0];
-  //       omega[i][1] = b->omega[1];
-  //       omega[i][2] = b->omega[2];
-  //     } else if (eflags[i] & TRIANGLE) {
-  //       inertiaatom = tbonus[tri[i]].inertia;
-  //       quatatom = tbonus[tri[i]].quat;
-  //       MathExtra::quatquat(b->quat,orient[i],quatatom);
-  //       MathExtra::qnormalize(quatatom);
-  //       MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
-  //       MathExtra::omega_to_angmom(b->omega,exone,eyone,ezone,
-  //                                  inertiaatom,angmom[i]);
-  //     }
-  //     if (eflags[i] & DIPOLE) {
-  //       MathExtra::quat_to_mat(b->quat,p);
-  //       MathExtra::matvec(p,dorient[i],mu[i]);
-  //       MathExtra::snormalize3(mu[i][3],mu[i],mu[i]);
-  //     }
-  //   }
-  // }
 }
 
 /* ----------------------------------------------------------------------
@@ -3777,51 +3235,6 @@ void FixRigidAbrade::set_v()
       v_tally(1,&i,1.0,vr,rlist,flist,b->xgc);
     }
   }
-
-  // // set omega, angmom of each extended particle
-
-  // if (extended) {
-  //   double *shape,*quatatom,*inertiaatom;
-
-  //   AtomVecEllipsoid::Bonus *ebonus;
-  //   if (avec_ellipsoid) ebonus = avec_ellipsoid->bonus;
-  //   AtomVecTri::Bonus *tbonus;
-  //   if (avec_tri) tbonus = avec_tri->bonus;
-  //   double **omega = atom->omega;
-  //   double **angmom = atom->angmom;
-  //   int *ellipsoid = atom->ellipsoid;
-  //   int *tri = atom->tri;
-
-  //   for (int i = 0; i < nlocal; i++) {
-  //     if (atom2body[i] < 0) continue;
-  //     Body *b = &body[atom2body[i]];
-
-  //     if (eflags[i] & SPHERE) {
-  //       omega[i][0] = b->omega[0];
-  //       omega[i][1] = b->omega[1];
-  //       omega[i][2] = b->omega[2];
-  //     } else if (eflags[i] & ELLIPSOID) {
-  //       shape = ebonus[ellipsoid[i]].shape;
-  //       quatatom = ebonus[ellipsoid[i]].quat;
-  //       ione[0] = EINERTIA*rmass[i] * (shape[1]*shape[1] + shape[2]*shape[2]);
-  //       ione[1] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[2]*shape[2]);
-  //       ione[2] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[1]*shape[1]);
-  //       MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
-  //       MathExtra::omega_to_angmom(b->omega,exone,eyone,ezone,ione,
-  //                                  angmom[i]);
-  //     } else if (eflags[i] & LINE) {
-  //       omega[i][0] = b->omega[0];
-  //       omega[i][1] = b->omega[1];
-  //       omega[i][2] = b->omega[2];
-  //     } else if (eflags[i] & TRIANGLE) {
-  //       inertiaatom = tbonus[tri[i]].inertia;
-  //       quatatom = tbonus[tri[i]].quat;
-  //       MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
-  //       MathExtra::omega_to_angmom(b->omega,exone,eyone,ezone,
-  //                                  inertiaatom,angmom[i]);
-  //     }
-  //   }
-  // }
 }
 
 /* ----------------------------------------------------------------------
@@ -4062,9 +3475,7 @@ int FixRigidAbrade::rendezvous_body(int n, char *inbuf,
 ------------------------------------------------------------------------- */
 
 void FixRigidAbrade::setup_bodies_static(){
-  if(!me)
-  std::cout << me << FYEL(": -------------------- CALLING SETUPBODIES STATIC, t = " << update->ntimestep << "  --------------------") << std::endl;
-  // std::cout << "*****************------------------ LOCAL: Setting up bodies static -------------------*****************" << std::endl;
+
   int i,ibody;
 
 
@@ -4376,57 +3787,6 @@ void FixRigidAbrade::setup_bodies_static(){
       inertia[5] += (((unwrap[i2][0]-unwrap[i1][0])*(unwrap[i3][1]-unwrap[i1][1])) - ((unwrap[i3][0]-unwrap[i1][0])*(unwrap[i2][1]-unwrap[i1][1]))) * (unwrap[i1][0]*((((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2]))+unwrap[i1][2]*(((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])+unwrap[i1][2]))+unwrap[i2][0]*((((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2]))+unwrap[i2][2]*(((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])+unwrap[i2][2]))+unwrap[i3][0]*((((unwrap[i1][2]*unwrap[i1][2])+unwrap[i2][2]*(unwrap[i1][2]+unwrap[i2][2]))+unwrap[i3][2]*((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2]))+unwrap[i3][2]*(((unwrap[i1][2]+unwrap[i2][2]) + unwrap[i3][2])+unwrap[i3][2])));
     }
 
-  // extended particles may contribute extra terms to moments of inertia
-
-  // if (extended) {
-  //   double ivec[6];
-  //   double *shape,*quatatom,*inertiaatom;
-  //   double length,theta;
-
-  //   for (i = 0; i < nlocal; i++) {
-  //     if (atom2body[i] < 0) continue;
-  //     inertia = itensor[atom2body[i]];
-
-  //     if (rmass) massone = rmass[i];
-  //     else massone = mass[type[i]];
-
-  //     if (eflags[i] & SPHERE) {
-  //       inertia[0] += SINERTIA*massone * radius[i]*radius[i];
-  //       inertia[1] += SINERTIA*massone * radius[i]*radius[i];
-  //       inertia[2] += SINERTIA*massone * radius[i]*radius[i];
-  //     } else if (eflags[i] & ELLIPSOID) {
-  //       shape = ebonus[ellipsoid[i]].shape;
-  //       quatatom = ebonus[ellipsoid[i]].quat;
-  //       MathExtra::inertia_ellipsoid(shape,quatatom,massone,ivec);
-  //       inertia[0] += ivec[0];
-  //       inertia[1] += ivec[1];
-  //       inertia[2] += ivec[2];
-  //       inertia[3] += ivec[3];
-  //       inertia[4] += ivec[4];
-  //       inertia[5] += ivec[5];
-  //     } else if (eflags[i] & LINE) {
-  //       length = lbonus[line[i]].length;
-  //       theta = lbonus[line[i]].theta;
-  //       MathExtra::inertia_line(length,theta,massone,ivec);
-  //       inertia[0] += ivec[0];
-  //       inertia[1] += ivec[1];
-  //       inertia[2] += ivec[2];
-  //       inertia[3] += ivec[3];
-  //       inertia[4] += ivec[4];
-  //       inertia[5] += ivec[5];
-  //     } else if (eflags[i] & TRIANGLE) {
-  //       inertiaatom = tbonus[tri[i]].inertia;
-  //       quatatom = tbonus[tri[i]].quat;
-  //       MathExtra::inertia_triangle(inertiaatom,quatatom,massone,ivec);
-  //       inertia[0] += ivec[0];
-  //       inertia[1] += ivec[1];
-  //       inertia[2] += ivec[2];
-  //       inertia[3] += ivec[3];
-  //       inertia[4] += ivec[4];
-  //       inertia[5] += ivec[5];
-  //     }
-  //   }
-  // }
 
   // reverse communicate inertia tensor of all bodies
 
@@ -4601,52 +3961,6 @@ void FixRigidAbrade::setup_bodies_static(){
     inertia[5] -= body[atom2body[anglelist[n][0]]].density * ((((((displace[i2][0]-displace[i1][0])*(displace[i3][1]-displace[i1][1])) - ((displace[i3][0]-displace[i1][0])*(displace[i2][1]-displace[i1][1]))) * (displace[i1][0]*((((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))+displace[i1][2]*(((displace[i1][2]+displace[i2][2]) + displace[i3][2])+displace[i1][2]))+displace[i2][0]*((((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))+displace[i2][2]*(((displace[i1][2]+displace[i2][2]) + displace[i3][2])+displace[i2][2]))+displace[i3][0]*((((displace[i1][2]*displace[i1][2])+displace[i2][2]*(displace[i1][2]+displace[i2][2]))+displace[i3][2]*((displace[i1][2]+displace[i2][2]) + displace[i3][2]))+displace[i3][2]*(((displace[i1][2]+displace[i2][2]) + displace[i3][2])+displace[i3][2]))))/120.0));
   }
 
-  // if (extended) {
-  //   double ivec[6];
-  //   double *shape,*inertiaatom;
-  //   double length;
-
-  //   for (i = 0; i < nlocal; i++) {
-  //     if (atom2body[i] < 0) continue;
-  //     inertia = itensor[atom2body[i]];
-
-  //     if (rmass) massone = rmass[i];
-  //     else massone = mass[type[i]];
-
-  //     if (eflags[i] & SPHERE) {
-  //       inertia[0] += SINERTIA*massone * radius[i]*radius[i];
-  //       inertia[1] += SINERTIA*massone * radius[i]*radius[i];
-  //       inertia[2] += SINERTIA*massone * radius[i]*radius[i];
-  //     } else if (eflags[i] & ELLIPSOID) {
-  //       shape = ebonus[ellipsoid[i]].shape;
-  //       MathExtra::inertia_ellipsoid(shape,orient[i],massone,ivec);
-  //       inertia[0] += ivec[0];
-  //       inertia[1] += ivec[1];
-  //       inertia[2] += ivec[2];
-  //       inertia[3] += ivec[3];
-  //       inertia[4] += ivec[4];
-  //       inertia[5] += ivec[5];
-  //     } else if (eflags[i] & LINE) {
-  //       length = lbonus[line[i]].length;
-  //       MathExtra::inertia_line(length,orient[i][0],massone,ivec);
-  //       inertia[0] += ivec[0];
-  //       inertia[1] += ivec[1];
-  //       inertia[2] += ivec[2];
-  //       inertia[3] += ivec[3];
-  //       inertia[4] += ivec[4];
-  //       inertia[5] += ivec[5];
-  //     } else if (eflags[i] & TRIANGLE) {
-  //       inertiaatom = tbonus[tri[i]].inertia;
-  //       MathExtra::inertia_triangle(inertiaatom,orient[i],massone,ivec);
-  //       inertia[0] += ivec[0];
-  //       inertia[1] += ivec[1];
-  //       inertia[2] += ivec[2];
-  //       inertia[3] += ivec[3];
-  //       inertia[4] += ivec[4];
-  //       inertia[5] += ivec[5];
-  //     }
-  //   }
-  // }
 
   // reverse communicate inertia tensor of all bodies
 
@@ -4706,8 +4020,6 @@ void FixRigidAbrade::setup_bodies_static(){
   memory->destroy(itensor);
   if (inpfile) memory->destroy(inbody);
   
-  if(!me)
-  std::cout << me << FGRN(": -------------------- FINISHED CALLING SETUPBODIES STATIC, t = " << update->ntimestep << "  --------------------") << std::endl;
   }
 
 /* ----------------------------------------------------------------------
@@ -4716,8 +4028,6 @@ void FixRigidAbrade::setup_bodies_static(){
 
 void FixRigidAbrade::resetup_bodies_static()
 {
-  if(!me)
-  std::cout << me << FYEL(": -------------------- CALLING RE-SETUPBODIES STATIC, t = " << update->ntimestep << "  --------------------") << std::endl;
   int i,ibody;
   int nlocal = atom->nlocal;
 
@@ -5160,8 +4470,6 @@ void FixRigidAbrade::resetup_bodies_static()
   // clean up
   memory->destroy(itensor);
 
-  if(!me)
-  std::cout << me << FGRN(": -------------------- FINISHED CALLING RE-SETUPBODIES STATIC, t = " << update->ntimestep << "  --------------------") << std::endl;
 }
 
 /* ----------------------------------------------------------------------
@@ -5172,8 +4480,6 @@ void FixRigidAbrade::resetup_bodies_static()
 
 void FixRigidAbrade::setup_bodies_dynamic()
 {
-  if(!me)
-  std::cout << me << FYEL(": -------------------- CALLING SETUPBODIES DYNAMIC, t = " << update->ntimestep << "  --------------------") << std::endl;
   int i,ibody;
   double massone,radone;
 
@@ -5358,8 +4664,6 @@ for (int n = 0; n < (neighbor->nanglelist + remesh_overflow_threshold + overflow
       std::cout << "proc: " << me << FGRN(", Initial dynamics: ") << " " << FGRN("local_body: ") << atom->tag[body[ibody].ilocal] << " vcm: (" << vcm[0] << ", " << vcm[1] << ", " << vcm[2] << ")   acm (" <<  acm[0] << ", " << acm[1] << ", " << acm[2] << ") xcm = " << body[ibody].xcm[0]  << ", " << body[ibody].xcm[1]  << ", " << body[ibody].xcm[2] << ", density = " << body[ibody].density << std::endl;
     }
 
-  if(!me)
-  std::cout << me << FGRN(": -------------------- FINISHED CALLING SETUPBODIES DYNAMIC, t = " << update->ntimestep << "  --------------------") << std::endl;
 }
 
 /* ----------------------------------------------------------------------
@@ -5742,10 +5046,6 @@ void FixRigidAbrade::set_arrays(int i)
   vertexdata[i][6] = 0.0;
   vertexdata[i][7] = 0.0;
   vertexdata[i][8] = 0.0;
-  vertexdata[i][9] = 10000000000.0;
-  vertexdata[i][10] = -1.0;
-  vertexdata[i][11] = 0.0;
-  vertexdata[i][12] = 0.0;
 
   // must also zero vatom if per-atom virial calculated on this timestep
   // since vatom is calculated before and after atom migration
@@ -6071,6 +5371,9 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
     }
 
   } else if (commflag == NEW_ANGLES) {
+    
+    // TODO: Can we only cycle through dlist atoms rather than all owned atoms?
+    
     for (i = 0; i < n; i++) {
       j = list[i];
 
