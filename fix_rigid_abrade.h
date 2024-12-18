@@ -21,7 +21,6 @@ FixStyle(rigid/abrade,FixRigidAbrade);
 #define LMP_FIX_RIGID_ABRADE_H
 
 #include "fix.h"
-#include <map>
 #include <vector>
 #include <algorithm> 
 
@@ -123,7 +122,7 @@ private:
   int triclinic;
 
   // Modified Commflags
-  enum{DEBUG, FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM, ANGMOM, XCM_MASS, MIN_AREA, EQUALISE, EDGES, POS_DEBUG, NEW_ANGLES, NEW_ANGLES_TYPES, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG, PROC_REMESH_FLAG, OWNING_ATOMS};
+  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM, ANGMOM, XCM_MASS, MIN_AREA, EQUALISE, EDGES, NEW_ANGLES, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG};
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
