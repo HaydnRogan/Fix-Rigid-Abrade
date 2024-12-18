@@ -1417,8 +1417,6 @@ void FixRigidAbrade::areas_and_normals() {
     axbk = delx2*dely1 - dely2*delx1;
 
     // area of angle
-
-    // TODO: This sqrt might be able to moved and only processed once
     area = (0.5) * sqrt(axbi*axbi + axbj*axbj + axbk*axbk); 
     sub_area = area/3.0;
     
@@ -2013,6 +2011,7 @@ void FixRigidAbrade::remesh(std::vector<int> dlist){
 
 
   // Communicate these locally contructed edges back to the proc which owns the dlist atom
+  // Also include the nangle typres of the broken angles to be later forward communicated back to ghost bodies in NEW_ANGLES
 
   commflag = EDGES;
   comm->reverse_comm(this);
@@ -2362,12 +2361,6 @@ for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++){
     }
   }
 
-  // TODO: This can probably be lumped into NEW_ANGLES comm
-  commflag = NEW_ANGLES_TYPES;
-  comm->reverse_comm(this);
-
-  commflag = NEW_ANGLES_TYPES;
-  comm->forward_comm(this);
 
   for (int i = 0; i < dlist.size(); i++){
       if (atom->map(dlist[i]) < 0) std::cout << me << FGRN(": post forward angle types = ") << FRED(" [") << dlist[i] << FRED(" / ") << new_angles_type[i] << FRED("]") << std::endl;
@@ -5383,6 +5376,9 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
       // get index of atom in the local dlist to acess its new_angles
       int array_index = static_cast<int>(find(dlist.begin(), dlist.end(), atom->tag[j]) - dlist.begin());
       
+      // packing new angles type previous set in the reverse comm of EDGES
+      buf[m++] = static_cast<double>(new_angles_type[array_index]);
+
       // pack and communicate the new_anglws, including the size so that it can be unpacked once sent
       buf[m++] = static_cast<double>(new_angles_list[array_index].size());
       for (int k = 0; k < new_angles_list[array_index].size(); k++){
@@ -5392,20 +5388,6 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf,
         buf[m++] = static_cast<double>(new_angles_list[array_index][k][2]);
      }
     }
-  } else if (commflag == NEW_ANGLES_TYPES) {
-    for (i = 0; i < n; i++) {
-      j = list[i];
-
-      // Only communicating properties relevant to atoms in the dlist
-      if (!count(dlist.begin(), dlist.end(), atom->tag[j])) continue;
-
-      // get index of atom in the local dlist to acess its new_angles
-      int array_index = static_cast<int>(find(dlist.begin(), dlist.end(), atom->tag[j]) - dlist.begin());
-
-      buf[m++] = static_cast<double>(new_angles_type[array_index]);
-     
-     }
-    
   } else if (commflag == MASS_NATOMS) {
     for (i = 0; i < n; i++) {
       j = list[i];
@@ -5588,13 +5570,18 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
           
     // Only communicating properties relevant to atoms in the dlist
     if (!count(dlist.begin(), dlist.end(), atom->tag[i])) continue;
-          
+
+    // get index of atom in the local dlist to acess its stored local new_angles
+    int rec_array_index = static_cast<int>(find(dlist.begin(), dlist.end(), atom->tag[i]) - dlist.begin());
+
+    int incoming_angle_type =  static_cast<int>(buf[m++]);
+    new_angles_type[rec_array_index] = incoming_angle_type;
+
+
     // unpack the size of the incoming new_angles_list buffer so that the contatined angles can be unpacked
     int rec_angles_size = static_cast<int>(buf[m++]);
     
     if (rec_angles_size){
-      // get index of atom in the local dlist to acess its stored local new_angles
-      int rec_array_index = static_cast<int>(find(dlist.begin(), dlist.end(), atom->tag[i]) - dlist.begin());
           
       // unpack new_angles_list
         for (int l = 0; l < rec_angles_size; l++){
@@ -5608,22 +5595,6 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
             new_angles_list[rec_array_index].push_back(temp);
         }
       } 
-    }
-
-  } else if (commflag == NEW_ANGLES_TYPES) {
-    for (i = first; i < last; i++) {
-          
-    // Only communicating properties relevant to atoms in the dlist
-    if (!count(dlist.begin(), dlist.end(), atom->tag[i])) continue;
-          
-   
-      // get index of atom in the local dlist to acess its stored local new_angles
-      int rec_array_index = static_cast<int>(find(dlist.begin(), dlist.end(), atom->tag[i]) - dlist.begin());
-          
-      int incoming_angle_type =  static_cast<int>(buf[m++]);
-
-      new_angles_type[rec_array_index] = incoming_angle_type;
-    
     }
 
   } else if (commflag == MASS_NATOMS) {
@@ -5825,49 +5796,30 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
       buf[m++] = vertexdata[i][3];
     }
 
-  } else if (commflag == NEW_ANGLES_TYPES) {
+  } else if (commflag == EDGES) {
     for (i = first; i < last; i++) {
-      
+
       // Only communicating properties relevant to atoms in the dlist
       if (!count(dlist.begin(), dlist.end(), atom->tag[i])) continue;
 
       // get index of atom in the local dlist to acess its stored local edges
       int array_index = static_cast<int>(find(dlist.begin(), dlist.end(), atom->tag[i]) - dlist.begin());
-
+      
+      // packing new angles type
       buf[m++] = static_cast<double>(new_angles_type[array_index]);
 
-    
-    }
-
-  } else if (commflag == EDGES) {
-
-  // std::cout << me << FYEL(": packing reverse_comm edges") << std::endl;
-
-  for (i = first; i < last; i++) {
-
-      // Only communicating properties relevant to atoms in the dlist
-      if (!count(dlist.begin(), dlist.end(), atom->tag[i])) continue;
-
-      // get index of atom in the local dlist to acess its stored local edges
-      int array_index = static_cast<int>(find(dlist.begin(), dlist.end(), atom->tag[i]) - dlist.begin());
-      
-      // if (edges[array_index].size()) std::cout << me << FYEL(" Packing edges associated with atom ") << atom->tag[i] << " size: " << edges[array_index].size() << std::endl;
-      
       // pack and communicate the associated edges, including the size so that it can be unpacked once sent
       buf[m++] = static_cast<double>(edges[array_index].size());
       for (int k = 0; k < edges[array_index].size(); k++){
         // pack first and second atom in each edge
         buf[m++] = static_cast<double>(edges[array_index][k][0]);
         buf[m++] = static_cast<double>(edges[array_index][k][1]);
-        // std::cout << me << FYEL(" packing (") << edges[array_index][k][0] << "->" << edges[array_index][k][1] << ")" << std::endl;
       }
 
       // clear the edges after they are packed so that a boundary is not constructed on a processor which does not own the remeshing atom
       edges[array_index].clear();
     }
-
-    // std::cout << me << FGRN(": finished packing reverse_comm edges") << std::endl;
-
+    
   } else if (commflag == DOF) {
     for (i = first; i < last; i++) {
       if (bodyown[i] < 0) continue;
@@ -6043,40 +5995,26 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
       vertexdata[j][3] += buf[m++];
     }
 
-  } else if (commflag == NEW_ANGLES_TYPES) {
-    for (i = 0; i < n; i++) {
-          j = list[i];
-
-          // Only communicating properties relevant to atoms in the dlist
-          if (!count(dlist.begin(), dlist.end(), atom->tag[j])) continue;
-
-          // get index of atom in the local dlist to acess its stored local edges
-            int rec_array_index = static_cast<int>(find(dlist.begin(), dlist.end(), atom->tag[j]) - dlist.begin());
-
-            int incoming_angle_type = static_cast<int>(buf[m++]);
-
-            if (incoming_angle_type != -1) new_angles_type[rec_array_index] = incoming_angle_type;
-
-
-            
-    }
-
   } else if (commflag == EDGES) {
     
-    // std::cout << me << FYEL(": unpacking reverse_comm edges") << std::endl;
     for (i = 0; i < n; i++) {
           j = list[i];
 
           // Only communicating properties relevant to atoms in the dlist
           if (!count(dlist.begin(), dlist.end(), atom->tag[j])) continue;
           
+          // get index of atom in the local dlist to acess its stored local edges
+          int rec_array_index = static_cast<tagint>(find(dlist.begin(), dlist.end(), atom->tag[j]) - dlist.begin());
+
+          // unpacking new angles type if it has been set
+          int incoming_angle_type = static_cast<int>(buf[m++]);
+          if (incoming_angle_type != -1) new_angles_type[rec_array_index] = incoming_angle_type;
+
+
           // unpack the size of the incoming edges buffer so that the contatined edges can be unpacked
           int rec_edges_size = static_cast<int>(buf[m++]);
 
           if (rec_edges_size){
-            // get index of atom in the local dlist to acess its stored local edges
-            int rec_array_index = static_cast<tagint>(find(dlist.begin(), dlist.end(), atom->tag[j]) - dlist.begin());
-
             for (int l = 0; l < rec_edges_size; l++){
               int edge_atom1 = static_cast<tagint>(buf[m++]);
               int edge_atom2 = static_cast<tagint>(buf[m++]);
@@ -6084,9 +6022,7 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
             }
           }
         }
-  
-  // std::cout << me << FGRN(": finished unpacking reverse_comm edges") << std::endl;
-  
+
   } else if (commflag == DOF) {
     for (i = 0; i < n; i++) {
       j = list[i];
