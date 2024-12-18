@@ -110,12 +110,9 @@ private:
   int global_remesh_flag = 0;
   int remesh_rebuild_flag = 0;
 
-  
-  int delete_atom_flag;
 
   bigint lastcheck;
   int equalise_surface_flag = 0;
-  
   
   void equalise_surface();
 
