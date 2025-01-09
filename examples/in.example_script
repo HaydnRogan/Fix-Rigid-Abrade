@@ -106,7 +106,7 @@ neigh_modify exclude molecule/intra all
 fix		walls all wall/gran/region hertz/history &
 		${kn} ${kt} 5000 3000 0.45 1    region wallBox contacts 
 
-fix abrade all rigid/abrade ${H} 0.25 8.0 molecule
+fix abrade all rigid/abrade ${H} 0.25 8.0 molecule remesh equalise
 
 
 ###############################################
