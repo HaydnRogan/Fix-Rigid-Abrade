@@ -3817,7 +3817,6 @@ void FixRigidAbrade::setup_bodies_static()
     // std::cout << me << ": Angle [" << n+1 << "]: " << atom->tag[i1] << "->" << atom->tag[i2] << "->" << atom->tag[i3] << std::endl;
 
     xcm = b->xcm;
-    xgc = b->xgc;
 
     b->volume += ((((unwrap[i2][1] - unwrap[i1][1]) * (unwrap[i3][2] - unwrap[i1][2])) -
                    ((unwrap[i3][1] - unwrap[i1][1]) * (unwrap[i2][2] - unwrap[i1][2]))) *
@@ -3842,29 +3841,11 @@ void FixRigidAbrade::setup_bodies_static()
          (((unwrap[i1][2] * unwrap[i1][2]) + unwrap[i2][2] * (unwrap[i1][2] + unwrap[i2][2])) +
           unwrap[i3][2] * ((unwrap[i1][2] + unwrap[i2][2]) + unwrap[i3][2]))) /
         24.0;
-    xgc[0] +=
-        ((((unwrap[i2][1] - unwrap[i1][1]) * (unwrap[i3][2] - unwrap[i1][2])) -
-          ((unwrap[i3][1] - unwrap[i1][1]) * (unwrap[i2][2] - unwrap[i1][2]))) *
-         (((unwrap[i1][0] * unwrap[i1][0]) + unwrap[i2][0] * (unwrap[i1][0] + unwrap[i2][0])) +
-          unwrap[i3][0] * ((unwrap[i1][0] + unwrap[i2][0]) + unwrap[i3][0]))) /
-        24.0;
-    xgc[1] +=
-        ((((unwrap[i3][0] - unwrap[i1][0]) * (unwrap[i2][2] - unwrap[i1][2])) -
-          ((unwrap[i2][0] - unwrap[i1][0]) * (unwrap[i3][2] - unwrap[i1][2]))) *
-         (((unwrap[i1][1] * unwrap[i1][1]) + unwrap[i2][1] * (unwrap[i1][1] + unwrap[i2][1])) +
-          unwrap[i3][1] * ((unwrap[i1][1] + unwrap[i2][1]) + unwrap[i3][1]))) /
-        24.0;
-    xgc[2] +=
-        ((((unwrap[i2][0] - unwrap[i1][0]) * (unwrap[i3][1] - unwrap[i1][1])) -
-          ((unwrap[i3][0] - unwrap[i1][0]) * (unwrap[i2][1] - unwrap[i1][1]))) *
-         (((unwrap[i1][2] * unwrap[i1][2]) + unwrap[i2][2] * (unwrap[i1][2] + unwrap[i2][2])) +
-          unwrap[i3][2] * ((unwrap[i1][2] + unwrap[i2][2]) + unwrap[i3][2]))) /
-        24.0;
   }
 
   // reverse communicate xcm, mass of all bodies
-  commflag = XCM_MASS;
-  comm->reverse_comm(this, 9);
+  commflag = XCM_VOL;
+  comm->reverse_comm(this, 5);
 
   // ---------------------------------------------------- PRINTING ---------------------------------------------------
   std::cout << " ---------------------- " << nlocal_body << "(" << nghost_body
@@ -3886,9 +3867,9 @@ void FixRigidAbrade::setup_bodies_static()
     xcm[0] /= body[ibody].volume;
     xcm[1] /= body[ibody].volume;
     xcm[2] /= body[ibody].volume;
-    xgc[0] /= body[ibody].volume;
-    xgc[1] /= body[ibody].volume;
-    xgc[2] /= body[ibody].volume;
+    xgc[0] = xcm[0];
+    xgc[1] = xcm[1];
+    xgc[2] = xcm[2];
 
     // Setting the mass of each body
     body[ibody].mass = body[ibody].volume * density;
@@ -4535,7 +4516,6 @@ void FixRigidAbrade::resetup_bodies_static()
     Body *b = &body[atom2body[i1]];
 
     xcm = b->xcm;
-    xgc = b->xgc;
 
     b->volume += ((((unwrap[i2][1] - unwrap[i1][1]) * (unwrap[i3][2] - unwrap[i1][2])) -
                    ((unwrap[i3][1] - unwrap[i1][1]) * (unwrap[i2][2] - unwrap[i1][2]))) *
@@ -4560,29 +4540,11 @@ void FixRigidAbrade::resetup_bodies_static()
          (((unwrap[i1][2] * unwrap[i1][2]) + unwrap[i2][2] * (unwrap[i1][2] + unwrap[i2][2])) +
           unwrap[i3][2] * ((unwrap[i1][2] + unwrap[i2][2]) + unwrap[i3][2]))) /
         24.0;
-    xgc[0] +=
-        ((((unwrap[i2][1] - unwrap[i1][1]) * (unwrap[i3][2] - unwrap[i1][2])) -
-          ((unwrap[i3][1] - unwrap[i1][1]) * (unwrap[i2][2] - unwrap[i1][2]))) *
-         (((unwrap[i1][0] * unwrap[i1][0]) + unwrap[i2][0] * (unwrap[i1][0] + unwrap[i2][0])) +
-          unwrap[i3][0] * ((unwrap[i1][0] + unwrap[i2][0]) + unwrap[i3][0]))) /
-        24.0;
-    xgc[1] +=
-        ((((unwrap[i3][0] - unwrap[i1][0]) * (unwrap[i2][2] - unwrap[i1][2])) -
-          ((unwrap[i2][0] - unwrap[i1][0]) * (unwrap[i3][2] - unwrap[i1][2]))) *
-         (((unwrap[i1][1] * unwrap[i1][1]) + unwrap[i2][1] * (unwrap[i1][1] + unwrap[i2][1])) +
-          unwrap[i3][1] * ((unwrap[i1][1] + unwrap[i2][1]) + unwrap[i3][1]))) /
-        24.0;
-    xgc[2] +=
-        ((((unwrap[i2][0] - unwrap[i1][0]) * (unwrap[i3][1] - unwrap[i1][1])) -
-          ((unwrap[i3][0] - unwrap[i1][0]) * (unwrap[i2][1] - unwrap[i1][1]))) *
-         (((unwrap[i1][2] * unwrap[i1][2]) + unwrap[i2][2] * (unwrap[i1][2] + unwrap[i2][2])) +
-          unwrap[i3][2] * ((unwrap[i1][2] + unwrap[i2][2]) + unwrap[i3][2]))) /
-        24.0;
   }
 
   // reverse communicate xcm, mass of all bodies
-  commflag = XCM_MASS;
-  comm->reverse_comm(this, 9);
+  commflag = XCM_VOL;
+  comm->reverse_comm(this, 5);
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
 
@@ -4596,9 +4558,9 @@ void FixRigidAbrade::resetup_bodies_static()
     xcm[0] /= body[ibody].volume;
     xcm[1] /= body[ibody].volume;
     xcm[2] /= body[ibody].volume;
-    xgc[0] /= body[ibody].volume;
-    xgc[1] /= body[ibody].volume;
-    xgc[2] /= body[ibody].volume;
+    xgc[0] = xcm[0];
+    xgc[1] = xcm[1];
+    xgc[2] = xcm[2];
 
     // Setting the mass of each body
     body[ibody].mass = body[ibody].volume * density;
@@ -6415,7 +6377,7 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
       buf[m++] = angmom[2];
     }
 
-  } else if (commflag == XCM_MASS) {
+  } else if (commflag == XCM_VOL) {
     for (i = first; i < last; i++) {
 
       // Only communicating properties relevant to bodies which have abraded and changed shape
@@ -6423,14 +6385,9 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
       if (!body[bodyown[i]].abraded_flag) continue;
 
       xcm = body[bodyown[i]].xcm;
-      xgc = body[bodyown[i]].xgc;
       buf[m++] = xcm[0];
       buf[m++] = xcm[1];
       buf[m++] = xcm[2];
-      buf[m++] = xgc[0];
-      buf[m++] = xgc[1];
-      buf[m++] = xgc[2];
-      buf[m++] = body[bodyown[i]].mass;
       buf[m++] = body[bodyown[i]].volume;
       buf[m++] = static_cast<double>(body[bodyown[i]].natoms);
     }
@@ -6574,7 +6531,7 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
       angmom[2] += buf[m++];
     }
 
-  } else if (commflag == XCM_MASS) {
+  } else if (commflag == XCM_VOL) {
     for (i = 0; i < n; i++) {
       j = list[i];
 
@@ -6583,14 +6540,9 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
       if (!body[bodyown[j]].abraded_flag) continue;
 
       xcm = body[bodyown[j]].xcm;
-      xgc = body[bodyown[j]].xgc;
       xcm[0] += buf[m++];
       xcm[1] += buf[m++];
       xcm[2] += buf[m++];
-      xgc[0] += buf[m++];
-      xgc[1] += buf[m++];
-      xgc[2] += buf[m++];
-      body[bodyown[j]].mass += buf[m++];
       body[bodyown[j]].volume += buf[m++];
       body[bodyown[j]].natoms += static_cast<int>(buf[m++]);
     }
