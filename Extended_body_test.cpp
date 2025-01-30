@@ -3648,9 +3648,9 @@ void FixRigidAbrade::setup_bodies_static()
   AtomVecTri::Bonus *tbonus;
   if (avec_tri) tbonus = avec_tri->bonus;
   double **mu = atom->mu;
-  double *radius = atom->radius;
   double *rmass = atom->rmass;
   double *mass = atom->mass;
+  double *radius = atom->radius;
   int *ellipsoid = atom->ellipsoid;
   int *line = atom->line;
   int *tri = atom->tri;
@@ -3876,9 +3876,30 @@ void FixRigidAbrade::setup_bodies_static()
     atom->radius[body[ibody].ilocal] /= 5;
   }
 
-  // Forward communicate body mass and natoms to ghost bodies so the mass of their atoms can be set
-  commflag = MASS_NATOMS;
-  comm->forward_comm(this, 2);
+  commflag = XCM;
+  comm->forward_comm(this, 3);
+
+  // offsetting each vertex outwards from the COM by its atoms radius
+  for (int i = 0; i < nlocal; i++){
+    
+    Body *b = &body[atom2body[i]];
+
+    xcm = b->xcm;
+    
+    if (i == b->ilocal) {
+      vertexdata[i][12] = xcm[0];
+      vertexdata[i][13] = xcm[1];
+      vertexdata[i][14] = xcm[2];
+    }
+    else {
+      double vertex_i[3] = {unwrap[i][0] - xcm[0], unwrap[i][1] - xcm[1], unwrap[i][2] - xcm[2]};
+      double len_i = MathExtra::len3(vertex_i);
+      vertexdata[i][12] = unwrap[i][0] + (radius[i] * (vertex_i[0]/len_i));
+      vertexdata[i][13] = unwrap[i][1] + (radius[i] * (vertex_i[1]/len_i));
+      vertexdata[i][14] = unwrap[i][2] + (radius[i] * (vertex_i[2]/len_i));
+    }
+  }
+
 
   // set vcm, angmom = 0.0 in case inpfile is used
   // and doesn't overwrite all body's values
@@ -6024,6 +6045,19 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf, int /*pbc_f
       buf[m++] = unwrap[j][2];
     }
 
+  }  else if (commflag == XCM) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+
+      // Only communicating properties relevant to bodies which have abraded and changed shape
+      if (atom2body[j] < 0) continue;
+      if (!body[atom2body[j]].abraded_flag) continue;
+
+      buf[m++] = body[atom2body[j]].xcm[0];
+      buf[m++] = body[atom2body[j]].xcm[1];
+      buf[m++] = body[atom2body[j]].xcm[2];
+    }
+
   } else if (commflag == NEW_ANGLES) {
 
     // TODO: Can we only cycle through dlist atoms rather than all owned atoms?
@@ -6225,6 +6259,18 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
       unwrap[i][0] = buf[m++];
       unwrap[i][1] = buf[m++];
       unwrap[i][2] = buf[m++];
+    }
+
+  } else if (commflag == XCM) {
+    for (i = first; i < last; i++) {
+
+      // Only communicating properties relevant to bodies which have abraded and changed shape
+      if (atom2body[i] < 0) continue;
+      if (!body[atom2body[i]].abraded_flag) continue;
+
+      body[atom2body[i]].xcm[0] = buf[m++];
+      body[atom2body[i]].xcm[1] = buf[m++];
+      body[atom2body[i]].xcm[2] = buf[m++];
     }
 
   } else if (commflag == NEW_ANGLES) {
