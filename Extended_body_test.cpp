@@ -5238,15 +5238,15 @@ void FixRigidAbrade::setup_bodies_dynamic()
 
     // Offsetting the atom positions about the bodies' COM
     xcm = b->xcm;
-    dx1 = unwrap[i1][0] - xcm[0];
-    dy1 = unwrap[i1][1] - xcm[1];
-    dz1 = unwrap[i1][2] - xcm[2];    // i1 position
-    dx2 = unwrap[i2][0] - xcm[0];
-    dy2 = unwrap[i2][1] - xcm[1];
-    dz2 = unwrap[i2][2] - xcm[2];    // i2 position
-    dx3 = unwrap[i3][0] - xcm[0];
-    dy3 = unwrap[i3][1] - xcm[1];
-    dz3 = unwrap[i3][2] - xcm[2];    // i3 position
+    dx1 = vertexdata[i1][12] - xcm[0];
+    dy1 = vertexdata[i1][13] - xcm[1];
+    dz1 = vertexdata[i1][14] - xcm[2];    // i1 position
+    dx2 = vertexdata[i2][12] - xcm[0];
+    dy2 = vertexdata[i2][13] - xcm[1];
+    dz2 = vertexdata[i2][14] - xcm[2];    // i2 position
+    dx3 = vertexdata[i3][12] - xcm[0];
+    dy3 = vertexdata[i3][13] - xcm[1];
+    dz3 = vertexdata[i3][14] - xcm[2];    // i3 position
     dx4 = 0.0;
     dy4 = 0.0;
     dz4 = 0.0;    // COM position (0.0, 0.0, 0.0)
@@ -5314,15 +5314,15 @@ void FixRigidAbrade::setup_bodies_dynamic()
 
     // Offsetting the atom positions about the bodies' COM
     xcm = b->xcm;
-    dx1 = unwrap[i1][0] - xcm[0];
-    dy1 = unwrap[i1][1] - xcm[1];
-    dz1 = unwrap[i1][2] - xcm[2];    // i1 position
-    dx2 = unwrap[i2][0] - xcm[0];
-    dy2 = unwrap[i2][1] - xcm[1];
-    dz2 = unwrap[i2][2] - xcm[2];    // i2 position
-    dx3 = unwrap[i3][0] - xcm[0];
-    dy3 = unwrap[i3][1] - xcm[1];
-    dz3 = unwrap[i3][2] - xcm[2];    // i3 position
+    dx1 = vertexdata[i1][12] - xcm[0];
+    dy1 = vertexdata[i1][13] - xcm[1];
+    dz1 = vertexdata[i1][14] - xcm[2];    // i1 position
+    dx2 = vertexdata[i2][12] - xcm[0];
+    dy2 = vertexdata[i2][13] - xcm[1];
+    dz2 = vertexdata[i2][14] - xcm[2];    // i2 position
+    dx3 = vertexdata[i3][12] - xcm[0];
+    dy3 = vertexdata[i3][13] - xcm[1];
+    dz3 = vertexdata[i3][14] - xcm[2];    // i3 position
     dx4 = 0.0;
     dy4 = 0.0;
     dz4 = 0.0;    // COM position (0.0, 0.0, 0.0)
