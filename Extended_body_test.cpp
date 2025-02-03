@@ -162,7 +162,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
     vertexdata[i][7] = 0.0;    // (ONLY ACCESSED BY LOCAL ATOMS)
     vertexdata[i][8] = 0.0;    // Cumulative Wear Energy (ONLY ACCESSED BY LOCAL ATOMS)
     vertexdata[i][9] = vertexdata[i][10] = vertexdata[i][11] = 0.0;    // normals (x,y,z) in body coords
-    vertexdata[i][12] = vertexdata[i][13] = vertexdata[i][14] = 0.0;    // vertice position pushed outwards from COM by atom radius
+    vertexdata[i][12] = vertexdata[i][13] = vertexdata[i][14] = 0.0;    // position of atom in body coordinates (offset from mesh vertices along each atoms normal by its radius in body coords)
   }
 
   // parse args for rigid body specification
@@ -821,6 +821,9 @@ void FixRigidAbrade::setup_pre_neighbor()
 
     // Setting up rigid body dynamics with respect to the new topology
     setup_bodies_dynamic();
+    for (int ibody = 0; ibody < nlocal_body; ibody ++) body[ibody].abraded_flag = 1;
+    offset_mesh_inwards();
+    for (int ibody = 0; ibody < nlocal_body; ibody ++) body[ibody].abraded_flag = 0;
   }
 }
 
@@ -890,6 +893,13 @@ void FixRigidAbrade::setup(int vflag)
     dx = unwrap[i][0] - xcm[0];
     dy = unwrap[i][1] - xcm[1];
     dz = unwrap[i][2] - xcm[2];
+
+    double offset[3] = {dx, dy, dz};
+    double len_offset = MathExtra::len3(offset);
+
+    dx = dx + (radius[i] * (dx)/len_offset);
+    dy = dy + (radius[i] * (dy)/len_offset);
+    dz = dz + (radius[i] * (dz)/len_offset);
 
     tcm = b->torque;
     tcm[0] += dy * f[i][2] - dz * f[i][1];
@@ -1420,22 +1430,22 @@ void FixRigidAbrade::areas_and_normals()
     // offsetting each vertex outwards from the COM by its atom's radius
 
     double vertex_i1[3] = {displace[i1][0], displace[i1][1], displace[i1][2]};
-    double len_i1 = MathExtra::len3(vertex_i1);
-    vertex_i1[0] = vertex_i1[0] * (1.0 + radius[i1]/len_i1);
-    vertex_i1[1] = vertex_i1[1] * (1.0 + radius[i1]/len_i1);
-    vertex_i1[2] = vertex_i1[2] * (1.0 + radius[i1]/len_i1);
+    // double len_i1 = MathExtra::len3(vertex_i1);
+    // vertex_i1[0] = vertex_i1[0] * (1.0 + radius[i1]/len_i1);
+    // vertex_i1[1] = vertex_i1[1] * (1.0 + radius[i1]/len_i1);
+    // vertex_i1[2] = vertex_i1[2] * (1.0 + radius[i1]/len_i1);
     
     double vertex_i2[3] = {displace[i2][0], displace[i2][1], displace[i2][2]};
-    double len_i2 = MathExtra::len3(vertex_i2);
-    vertex_i2[0] = vertex_i2[0] * (1.0 + radius[i2]/len_i2);
-    vertex_i2[1] = vertex_i2[1] * (1.0 + radius[i2]/len_i2);
-    vertex_i2[2] = vertex_i2[2] * (1.0 + radius[i2]/len_i2);
+    // double len_i2 = MathExtra::len3(vertex_i2);
+    // vertex_i2[0] = vertex_i2[0] * (1.0 + radius[i2]/len_i2);
+    // vertex_i2[1] = vertex_i2[1] * (1.0 + radius[i2]/len_i2);
+    // vertex_i2[2] = vertex_i2[2] * (1.0 + radius[i2]/len_i2);
 
     double vertex_i3[3] = {displace[i3][0], displace[i3][1], displace[i3][2]};
-    double len_i3 = MathExtra::len3(vertex_i3);
-    vertex_i3[0] = vertex_i3[0] * (1.0 + radius[i3]/len_i3);
-    vertex_i3[1] = vertex_i3[1] * (1.0 + radius[i3]/len_i3);
-    vertex_i3[2] = vertex_i3[2] * (1.0 + radius[i3]/len_i3);
+    // double len_i3 = MathExtra::len3(vertex_i3);
+    // vertex_i3[0] = vertex_i3[0] * (1.0 + radius[i3]/len_i3);
+    // vertex_i3[1] = vertex_i3[1] * (1.0 + radius[i3]/len_i3);
+    // vertex_i3[2] = vertex_i3[2] * (1.0 + radius[i3]/len_i3);
    
    
    // 1st edge
@@ -1636,7 +1646,7 @@ void FixRigidAbrade::areas_and_normals()
     commflag = MIN_AREA;
     comm->reverse_comm(this, 4);
 
-    // Forward communicate this gloabal-per-body minimum back out to the ghost bodies
+    // Forward communicate this global-per-body minimum back out to the ghost bodies
     commflag = MIN_AREA;
     comm->forward_comm(this, 5);
 
@@ -1690,8 +1700,138 @@ void FixRigidAbrade::areas_and_normals()
   }
 }
 
+
 /* ----------------------------------------------------------------------
-  Calaulte the dispalcement velocity of an abrading atom in the global
+  Push the body coordinates (displace[i]) of each atom inwards along their normals by each atom's radius. This sets the 
+  vertexes of the mesh calculated in setup and resetup_bodies_static() and used to calculate the mass, volume, 
+  interia, normals, and areas to be placed at outside edge of the particle.
+------------------------------------------------------------------------- */
+void FixRigidAbrade::offset_mesh_inwards(void){
+
+  int nlocal = atom->nlocal;
+  double *radius = atom->radius;
+  double **x = atom->x;
+
+
+  for (int i = 0; i < nlocal; i++){
+
+    if (atom2body[i] < 0) continue;
+
+    // Only processing properties relevant to bodies which have abraded and changed shape
+    if (!body[atom2body[i]].abraded_flag) continue;
+
+    if (bodytag[i] == atom->tag[i]) continue;
+
+    Body *b = &body[atom2body[i]];
+
+
+    // offsetting atoms outwards towards the COM by the atoms radius  
+    double len_i = MathExtra::len3(displace[i]);
+    displace[i][0] = displace[i][0] * (1.0 - radius[i]/len_i);
+    displace[i][1] = displace[i][1] * (1.0 - radius[i]/len_i);
+    displace[i][2] = displace[i][2] * (1.0 - radius[i]/len_i);
+
+
+    MathExtra::matvec(b->ex_space, b->ey_space, b->ez_space, displace[i], x[i]);
+
+    // This transormation is with respect to (0,0,0) in the global coordinate space, so we need to translate the position of atom i by the postition of its body's COM
+    // Additionally, we map back into periodic box via xbox,ybox,zbox
+    // same for triclinic, we add in box tilt factors as well
+
+    int xbox, ybox, zbox;
+    double xprd = domain->xprd;
+    double yprd = domain->yprd;
+    double zprd = domain->zprd;
+
+    double xy = domain->xy;
+    double xz = domain->xz;
+    double yz = domain->yz;
+
+    xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
+    ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
+    zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
+
+    // add center of mass to displacement
+    if (triclinic == 0) {
+      x[i][0] += b->xcm[0] - xbox * xprd;
+      x[i][1] += b->xcm[1] - ybox * yprd;
+      x[i][2] += b->xcm[2] - zbox * zprd;
+    } else {
+      x[i][0] += b->xcm[0] - xbox * xprd - ybox * xy - zbox * xz;
+      x[i][1] += b->xcm[1] - ybox * yprd - zbox * yz;
+      x[i][2] += b->xcm[2] - zbox * zprd;
+    }
+  }
+  commflag = DISPLACE;
+  comm->forward_comm(this, 3);
+}
+
+/* ----------------------------------------------------------------------
+  Push the body coordinates (displace[i]) of each atom inwards along their normals by each atom's radius. This sets the 
+  vertexes of the mesh calculated in setup and resetup_bodies_static() and used to calculate the mass, volume, 
+  interia, normals, and areas to be placed at outside edge of the particle.
+------------------------------------------------------------------------- */
+void FixRigidAbrade::offset_mesh_outwards(void){
+
+  int nlocal = atom->nlocal;
+  double *radius = atom->radius;
+  double **x = atom->x;
+
+
+  for (int i = 0; i < nlocal; i++){
+
+    if (atom2body[i] < 0) continue;
+
+    // Only processing properties relevant to bodies which have abraded and changed shape
+    if (!body[atom2body[i]].abraded_flag) continue;
+
+    if (bodytag[i] == atom->tag[i]) continue;
+
+    Body *b = &body[atom2body[i]];
+
+
+    // offsetting atoms outwards towards the COM by the atoms radius  
+    double len_i = MathExtra::len3(displace[i]);
+    displace[i][0] = displace[i][0] * (1.0 + radius[i]/len_i);
+    displace[i][1] = displace[i][1] * (1.0 + radius[i]/len_i);
+    displace[i][2] = displace[i][2] * (1.0 + radius[i]/len_i);
+
+
+    MathExtra::matvec(b->ex_space, b->ey_space, b->ez_space, displace[i], x[i]);
+
+    // This transormation is with respect to (0,0,0) in the global coordinate space, so we need to translate the position of atom i by the postition of its body's COM
+    // Additionally, we map back into periodic box via xbox,ybox,zbox
+    // same for triclinic, we add in box tilt factors as well
+
+    int xbox, ybox, zbox;
+    double xprd = domain->xprd;
+    double yprd = domain->yprd;
+    double zprd = domain->zprd;
+
+    double xy = domain->xy;
+    double xz = domain->xz;
+    double yz = domain->yz;
+
+    xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
+    ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
+    zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
+
+    // add center of mass to displacement
+    if (triclinic == 0) {
+      x[i][0] += b->xcm[0] - xbox * xprd;
+      x[i][1] += b->xcm[1] - ybox * yprd;
+      x[i][2] += b->xcm[2] - zbox * zprd;
+    } else {
+      x[i][0] += b->xcm[0] - xbox * xprd - ybox * xy - zbox * xz;
+      x[i][1] += b->xcm[1] - ybox * yprd - zbox * yz;
+      x[i][2] += b->xcm[2] - zbox * zprd;
+    }
+  }
+}
+
+
+/* ----------------------------------------------------------------------
+  Calaulte the displacement velocity of an abrading atom in the global
   coordinate system
 ------------------------------------------------------------------------- */
 
@@ -2650,6 +2790,7 @@ void FixRigidAbrade::compute_forces_and_torques()
   double **x = atom->x;
   double **f = atom->f;
   int nlocal = atom->nlocal;
+  double *radius = atom->radius;
 
   double dx, dy, dz;
   double *xcm, *fcm, *tcm;
@@ -2675,6 +2816,13 @@ void FixRigidAbrade::compute_forces_and_torques()
     dx = unwrap[i][0] - xcm[0];
     dy = unwrap[i][1] - xcm[1];
     dz = unwrap[i][2] - xcm[2];
+
+    double offset[3] = {dx, dy, dz};
+    double len_offset = MathExtra::len3(offset);
+
+    dx = dx + (radius[i] * (dx)/len_offset);
+    dy = dy + (radius[i] * (dy)/len_offset);
+    dz = dz + (radius[i] * (dz)/len_offset);
 
     tcm = b->torque;
     tcm[0] += dy * f[i][2] - dz * f[i][1];
@@ -2843,6 +2991,8 @@ void FixRigidAbrade::final_integrate()
   commflag = ABRADED_FLAG;
   comm->forward_comm(this, 1);
 
+  offset_mesh_outwards();
+
   // recalculate properties and normals for each abraded body
   if (dynamic_flag) resetup_bodies_static();
 
@@ -2854,6 +3004,7 @@ void FixRigidAbrade::final_integrate()
 
   // recalculate areas and normals using the updated body coordinates stored in displace[i] (also check if remeshing is required)
   areas_and_normals();
+  offset_mesh_inwards();
 
   // Setting the displacement velocities and wear energy of all atoms back to 0
   for (int i = 0; i < nlocal; i++) {
@@ -2960,8 +3111,10 @@ void FixRigidAbrade::end_of_step()
     // TODO: check if this is required? Is it not handled by avec->copy?
     // reset interia, volume, mass, and most importantly the COM, principal axes, and displace[i] used in areas_and_normals()
     if (dynamic_flag) {
+      offset_mesh_outwards();
       resetup_bodies_static();
       areas_and_normals();
+      offset_mesh_inwards();
     }
 
     // all other vertexdata[i][>3] are only accessed for ghost atoms. reset them here just as a precaution
@@ -3875,31 +4028,6 @@ void FixRigidAbrade::setup_bodies_static()
     body[ibody].mass = body[ibody].volume * density;
     atom->radius[body[ibody].ilocal] /= 5;
   }
-
-  commflag = XCM;
-  comm->forward_comm(this, 3);
-
-  // offsetting each vertex outwards from the COM by its atoms radius
-  for (int i = 0; i < nlocal; i++){
-    
-    Body *b = &body[atom2body[i]];
-
-    xcm = b->xcm;
-    
-    if (i == b->ilocal) {
-      vertexdata[i][12] = xcm[0];
-      vertexdata[i][13] = xcm[1];
-      vertexdata[i][14] = xcm[2];
-    }
-    else {
-      double vertex_i[3] = {unwrap[i][0] - xcm[0], unwrap[i][1] - xcm[1], unwrap[i][2] - xcm[2]};
-      double len_i = MathExtra::len3(vertex_i);
-      vertexdata[i][12] = unwrap[i][0] + (radius[i] * (vertex_i[0]/len_i));
-      vertexdata[i][13] = unwrap[i][1] + (radius[i] * (vertex_i[1]/len_i));
-      vertexdata[i][14] = unwrap[i][2] + (radius[i] * (vertex_i[2]/len_i));
-    }
-  }
-
 
   // set vcm, angmom = 0.0 in case inpfile is used
   // and doesn't overwrite all body's values
