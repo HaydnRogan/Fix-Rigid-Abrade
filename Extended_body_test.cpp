@@ -871,7 +871,7 @@ void FixRigidAbrade::setup(int vflag)
   double *radius = atom->radius;
 
   double *xcm, *fcm, *tcm;
-  double dx, dy, dz;
+  double dx[3];
 
   for (ibody = 0; ibody < nlocal_body + nghost_body; ibody++) {
     fcm = body[ibody].fcm;
@@ -884,6 +884,9 @@ void FixRigidAbrade::setup(int vflag)
     if (atom2body[i] < 0) continue;
     Body *b = &body[atom2body[i]];
 
+    // Don't apply initial forces to owning atoms (located at the COM)
+    if (bodytag[i] == atom->tag[i]) continue;
+
     fcm = b->fcm;
     fcm[0] += f[i][0];
     fcm[1] += f[i][1];
@@ -891,21 +894,19 @@ void FixRigidAbrade::setup(int vflag)
 
     domain->unmap(x[i], xcmimage[i], unwrap[i]);
     xcm = b->xcm;
-    dx = unwrap[i][0] - xcm[0];
-    dy = unwrap[i][1] - xcm[1];
-    dz = unwrap[i][2] - xcm[2];
+    dx[0] = unwrap[i][0] - xcm[0];
+    dx[1] = unwrap[i][1] - xcm[1];
+    dx[2] = unwrap[i][2] - xcm[2];
 
-    double offset[3] = {dx, dy, dz};
-    double len_offset = MathExtra::len3(offset);
-
-    dx = dx + (radius[i] * (dx)/len_offset);
-    dy = dy + (radius[i] * (dy)/len_offset);
-    dz = dz + (radius[i] * (dz)/len_offset);
+    double offset = (1.0 + radius[i] * MathExtra::len3(dx));
+    dx[0] *= offset;
+    dx[1] *= offset;
+    dx[2] *= offset;
 
     tcm = b->torque;
-    tcm[0] += dy * f[i][2] - dz * f[i][1];
-    tcm[1] += dz * f[i][0] - dx * f[i][2];
-    tcm[2] += dx * f[i][1] - dy * f[i][0];
+    tcm[0] += dx[1] * f[i][2] - dx[2] * f[i][1];
+    tcm[1] += dx[2] * f[i][0] - dx[0] * f[i][2];
+    tcm[2] += dx[0] * f[i][1] - dx[1] * f[i][0];
   }
 
   // enforce 2d body forces and torques
@@ -1392,7 +1393,8 @@ void FixRigidAbrade::areas_and_normals()
     // Only processing properties relevant to bodies which have abraded and changed shape
     if (atom2body[i] < 0) continue;
     if (!body[atom2body[i]].abraded_flag) continue;
-
+    
+    body[atom2body[i]].offset_flag = 1;
     vertexdata[i][0] = 0.0;    // x normal
     vertexdata[i][1] = 0.0;    // y normal
     vertexdata[i][2] = 0.0;    // z normal
@@ -1719,7 +1721,7 @@ void FixRigidAbrade::offset_mesh_inwards(void){
     if (atom2body[i] < 0) continue;
 
     // Only processing properties relevant to bodies which have abraded and changed shape
-    if (!body[atom2body[i]].abraded_flag) continue;
+    if (!body[atom2body[i]].offset_flag) continue;
 
     if (bodytag[i] == atom->tag[i]) continue;
 
@@ -1763,6 +1765,14 @@ void FixRigidAbrade::offset_mesh_inwards(void){
       x[i][2] += b->xcm[2] - zbox * zprd;
     }
   }
+
+  for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
+    if (body[ibody].offset_flag){
+      body[ibody].abraded_flag = 1;
+      body[ibody].offset_flag = 0;
+    }
+  }
+
   commflag = DISPLACE;
   comm->forward_comm(this, 3);
 }
@@ -2793,7 +2803,7 @@ void FixRigidAbrade::compute_forces_and_torques()
   int nlocal = atom->nlocal;
   double *radius = atom->radius;
 
-  double dx, dy, dz;
+  double dx[3];
   double *xcm, *fcm, *tcm;
 
   for (ibody = 0; ibody < nlocal_body + nghost_body; ibody++) {
@@ -2807,6 +2817,10 @@ void FixRigidAbrade::compute_forces_and_torques()
     if (atom2body[i] < 0) continue;
     Body *b = &body[atom2body[i]];
 
+    // Note: forces are still summed from the owning atom located at the COM. For star-shaped particles this atom should not experience a force.
+    // Howeverm if a case arrises where this atom is expected to experience a force then it should be ignored:
+    if (bodytag[i] == atom->tag[i]) continue;
+
     fcm = b->fcm;
     fcm[0] += f[i][0];
     fcm[1] += f[i][1];
@@ -2814,21 +2828,19 @@ void FixRigidAbrade::compute_forces_and_torques()
 
     domain->unmap(x[i], xcmimage[i], unwrap[i]);
     xcm = b->xcm;
-    dx = unwrap[i][0] - xcm[0];
-    dy = unwrap[i][1] - xcm[1];
-    dz = unwrap[i][2] - xcm[2];
+    dx[0] = unwrap[i][0] - xcm[0];
+    dx[1] = unwrap[i][1] - xcm[1];
+    dx[2] = unwrap[i][2] - xcm[2];
 
-    double offset[3] = {dx, dy, dz};
-    double len_offset = MathExtra::len3(offset);
-
-    dx = dx + (radius[i] * (dx)/len_offset);
-    dy = dy + (radius[i] * (dy)/len_offset);
-    dz = dz + (radius[i] * (dz)/len_offset);
+    double offset = (1.0 + radius[i] * MathExtra::len3(dx));
+    dx[0] *= offset;
+    dx[1] *= offset;
+    dx[2] *= offset;
 
     tcm = b->torque;
-    tcm[0] += dy * f[i][2] - dz * f[i][1];
-    tcm[1] += dz * f[i][0] - dx * f[i][2];
-    tcm[2] += dx * f[i][1] - dy * f[i][0];
+    tcm[0] += dx[1] * f[i][2] - dx[2] * f[i][1];
+    tcm[1] += dx[2] * f[i][0] - dx[0] * f[i][2];
+    tcm[2] += dx[0] * f[i][1] - dx[1] * f[i][0];
   }
 
   // reverse communicate fcm, torque of all bodies
