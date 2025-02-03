@@ -868,6 +868,7 @@ void FixRigidAbrade::setup(int vflag)
   double **x = atom->x;
   double **f = atom->f;
   int nlocal = atom->nlocal;
+  double *radius = atom->radius;
 
   double *xcm, *fcm, *tcm;
   double dx, dy, dz;
