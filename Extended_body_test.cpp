@@ -127,7 +127,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   restart_peratom = 1;    //~ Per-atom information is saved to the restart file
   peratom_flag = 1;
   size_peratom_cols =
-      9 + 6;    //~ normal x/y/z, area and displacement speed x/y/z, cumulative displacement, Wear Energy, Duration of elastic interaction preceeding deformation, intial timestep of current elastic interaction, elastic interaction flag, plastic interaction flag
+      9;    //~ normal x/y/z, area and displacement speed x/y/z, cumulative displacement, Wear Energy, Duration of elastic interaction preceeding deformation, intial timestep of current elastic interaction, elastic interaction flag, plastic interaction flag
   peratom_freq =
       1;    // every step, **TODO change to user input utils::inumeric(FLERR,arg[5],false,lmp);
   create_attribute = 1;    //fix stores attributes that need setting when a new atom is created
@@ -161,8 +161,6 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
         0.0;                   // displacement velocity (x,y,z) (ONLY ACCESSED BY LOCAL ATOMS)
     vertexdata[i][7] = 0.0;    // (ONLY ACCESSED BY LOCAL ATOMS)
     vertexdata[i][8] = 0.0;    // Cumulative Wear Energy (ONLY ACCESSED BY LOCAL ATOMS)
-    vertexdata[i][9] = vertexdata[i][10] = vertexdata[i][11] = 0.0;    // normals (x,y,z) in body coords
-    vertexdata[i][12] = vertexdata[i][13] = vertexdata[i][14] = 0.0;    // position of atom in body coordinates (offset from mesh vertices along each atoms normal by its radius in body coords)
   }
 
   // parse args for rigid body specification
@@ -821,6 +819,7 @@ void FixRigidAbrade::setup_pre_neighbor()
 
     // Setting up rigid body dynamics with respect to the new topology
     setup_bodies_dynamic();
+    
     for (int ibody = 0; ibody < nlocal_body; ibody ++) body[ibody].abraded_flag = 1;
     offset_mesh_inwards();
     for (int ibody = 0; ibody < nlocal_body; ibody ++) body[ibody].abraded_flag = 0;
@@ -857,7 +856,7 @@ void FixRigidAbrade::setup(int vflag)
   // must check here, not in init, b/c neigh/comm values set after fix init
 
   // TODO: Put in error check here for setting the owning atom to be larger than the ghost cutoff for owned atoms....
-  double cutghost = MAX(neighbor->cutneighmax, comm->cutghostuser);
+   double cutghost = MAX(neighbor->cutneighmax, comm->cutghostuser);
   if (maxextent > cutghost)
     error->all(FLERR, "Rigid body extent > ghost cutoff - use comm_modify cutoff");
 
@@ -1372,7 +1371,6 @@ void FixRigidAbrade::areas_and_normals()
 
   double **x = atom->x;
   double **f = atom->f;
-  double *radius = atom->radius;
   int **anglelist = neighbor->anglelist;
   int nanglelist = neighbor->nanglelist;
   int nlocal = atom->nlocal;
@@ -1393,7 +1391,6 @@ void FixRigidAbrade::areas_and_normals()
     // Only processing properties relevant to bodies which have abraded and changed shape
     if (atom2body[i] < 0) continue;
     if (!body[atom2body[i]].abraded_flag) continue;
-    
     body[atom2body[i]].offset_flag = 1;
     vertexdata[i][0] = 0.0;    // x normal
     vertexdata[i][1] = 0.0;    // y normal
@@ -1429,40 +1426,20 @@ void FixRigidAbrade::areas_and_normals()
     // Only processing properties relevant to bodies which have abraded and changed shape
     if (!body[atom2body[i1]].abraded_flag) continue;
 
+    // 1st edge
 
-    // offsetting each vertex outwards from the COM by its atom's radius
-
-    double vertex_i1[3] = {displace[i1][0], displace[i1][1], displace[i1][2]};
-    // double len_i1 = MathExtra::len3(vertex_i1);
-    // vertex_i1[0] = vertex_i1[0] * (1.0 + radius[i1]/len_i1);
-    // vertex_i1[1] = vertex_i1[1] * (1.0 + radius[i1]/len_i1);
-    // vertex_i1[2] = vertex_i1[2] * (1.0 + radius[i1]/len_i1);
-    
-    double vertex_i2[3] = {displace[i2][0], displace[i2][1], displace[i2][2]};
-    // double len_i2 = MathExtra::len3(vertex_i2);
-    // vertex_i2[0] = vertex_i2[0] * (1.0 + radius[i2]/len_i2);
-    // vertex_i2[1] = vertex_i2[1] * (1.0 + radius[i2]/len_i2);
-    // vertex_i2[2] = vertex_i2[2] * (1.0 + radius[i2]/len_i2);
-
-    double vertex_i3[3] = {displace[i3][0], displace[i3][1], displace[i3][2]};
-    // double len_i3 = MathExtra::len3(vertex_i3);
-    // vertex_i3[0] = vertex_i3[0] * (1.0 + radius[i3]/len_i3);
-    // vertex_i3[1] = vertex_i3[1] * (1.0 + radius[i3]/len_i3);
-    // vertex_i3[2] = vertex_i3[2] * (1.0 + radius[i3]/len_i3);
-   
-   
-   // 1st edge
-    delx1 = vertex_i1[0] - vertex_i2[0];
-    dely1 = vertex_i1[1] - vertex_i2[1];
-    delz1 = vertex_i1[2] - vertex_i2[2];
+    delx1 = displace[i1][0] - displace[i2][0];
+    dely1 = displace[i1][1] - displace[i2][1];
+    delz1 = displace[i1][2] - displace[i2][2];
 
     rsq1 = delx1 * delx1 + dely1 * dely1 + delz1 * delz1;
     r1 = sqrt(rsq1);
 
     // 2nd edge
-    delx2 = vertex_i3[0] - vertex_i2[0];
-    dely2 = vertex_i3[1] - vertex_i2[1];
-    delz2 = vertex_i3[2] - vertex_i2[2];
+
+    delx2 = displace[i3][0] - displace[i2][0];
+    dely2 = displace[i3][1] - displace[i2][1];
+    delz2 = displace[i3][2] - displace[i2][2];
 
     rsq2 = delx2 * delx2 + dely2 * dely2 + delz2 * delz2;
     r2 = sqrt(rsq2);
@@ -1484,9 +1461,9 @@ void FixRigidAbrade::areas_and_normals()
     n3 = axbk / area;
 
     // Centroid of the vertices making the current triangle
-    centroid[0] = (vertex_i1[0] + vertex_i2[0] + vertex_i3[0]) / 3.0;
-    centroid[1] = (vertex_i1[1] + vertex_i2[1] + vertex_i3[1]) / 3.0;
-    centroid[2] = (vertex_i1[2] + vertex_i2[2] + vertex_i3[2]) / 3.0;
+    centroid[0] = (displace[i1][0] + displace[i2][0] + displace[i3][0]) / 3.0;
+    centroid[1] = (displace[i1][1] + displace[i2][1] + displace[i3][1]) / 3.0;
+    centroid[2] = (displace[i1][2] + displace[i2][2] + displace[i3][2]) / 3.0;
 
     // Check that the normal points outwards from the centre of mass of the rigid body
     // since we are using body coordinates, [0,0,0] is the COM of the respective body
@@ -1609,16 +1586,6 @@ void FixRigidAbrade::areas_and_normals()
     vertexdata[i][1] = norm2 / length;
     vertexdata[i][2] = norm3 / length;
 
-
-  // Converting normals from body coordinates to global coordinates so they can be compared with atom velocities
-  double bodynormals[3] = {vertexdata[i][0], vertexdata[i][1], vertexdata[i][2]};
-  double global_normals[3];
-
-  MathExtra::matvec(b->ex_space, b->ey_space, b->ez_space, bodynormals, global_normals);
-  vertexdata[i][9] = global_normals[0];
-  vertexdata[i][10] = global_normals[1];
-  vertexdata[i][11] = global_normals[2];
-
     // calcualting surface area of each body
     if ((bodytag[i] != atom->tag[i]) && remesh_flag) {
 
@@ -1649,7 +1616,7 @@ void FixRigidAbrade::areas_and_normals()
     commflag = MIN_AREA;
     comm->reverse_comm(this, 4);
 
-    // Forward communicate this global-per-body minimum back out to the ghost bodies
+    // Forward communicate this gloabal-per-body minimum back out to the ghost bodies
     commflag = MIN_AREA;
     comm->forward_comm(this, 5);
 
@@ -1703,146 +1670,8 @@ void FixRigidAbrade::areas_and_normals()
   }
 }
 
-
 /* ----------------------------------------------------------------------
-  Push the body coordinates (displace[i]) of each atom inwards along their normals by each atom's radius. This sets the 
-  vertexes of the mesh calculated in setup and resetup_bodies_static() and used to calculate the mass, volume, 
-  interia, normals, and areas to be placed at outside edge of the particle.
-------------------------------------------------------------------------- */
-void FixRigidAbrade::offset_mesh_inwards(void){
-
-  int nlocal = atom->nlocal;
-  double *radius = atom->radius;
-  double **x = atom->x;
-
-
-  for (int i = 0; i < nlocal; i++){
-
-    if (atom2body[i] < 0) continue;
-
-    // Only processing properties relevant to bodies which have abraded and changed shape
-    if (!body[atom2body[i]].offset_flag) continue;
-
-    if (bodytag[i] == atom->tag[i]) continue;
-
-    Body *b = &body[atom2body[i]];
-
-
-    // offsetting atoms outwards towards the COM by the atoms radius  
-    double len_i = MathExtra::len3(displace[i]);
-    displace[i][0] = displace[i][0] * (1.0 - radius[i]/len_i);
-    displace[i][1] = displace[i][1] * (1.0 - radius[i]/len_i);
-    displace[i][2] = displace[i][2] * (1.0 - radius[i]/len_i);
-
-
-    MathExtra::matvec(b->ex_space, b->ey_space, b->ez_space, displace[i], x[i]);
-
-    // This transormation is with respect to (0,0,0) in the global coordinate space, so we need to translate the position of atom i by the postition of its body's COM
-    // Additionally, we map back into periodic box via xbox,ybox,zbox
-    // same for triclinic, we add in box tilt factors as well
-
-    int xbox, ybox, zbox;
-    double xprd = domain->xprd;
-    double yprd = domain->yprd;
-    double zprd = domain->zprd;
-
-    double xy = domain->xy;
-    double xz = domain->xz;
-    double yz = domain->yz;
-
-    xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
-    ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
-    zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
-
-    // add center of mass to displacement
-    if (triclinic == 0) {
-      x[i][0] += b->xcm[0] - xbox * xprd;
-      x[i][1] += b->xcm[1] - ybox * yprd;
-      x[i][2] += b->xcm[2] - zbox * zprd;
-    } else {
-      x[i][0] += b->xcm[0] - xbox * xprd - ybox * xy - zbox * xz;
-      x[i][1] += b->xcm[1] - ybox * yprd - zbox * yz;
-      x[i][2] += b->xcm[2] - zbox * zprd;
-    }
-  }
-
-  for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
-    if (body[ibody].offset_flag){
-      body[ibody].abraded_flag = 1;
-      body[ibody].offset_flag = 0;
-    }
-  }
-
-  commflag = DISPLACE;
-  comm->forward_comm(this, 3);
-}
-
-/* ----------------------------------------------------------------------
-  Push the body coordinates (displace[i]) of each atom inwards along their normals by each atom's radius. This sets the 
-  vertexes of the mesh calculated in setup and resetup_bodies_static() and used to calculate the mass, volume, 
-  interia, normals, and areas to be placed at outside edge of the particle.
-------------------------------------------------------------------------- */
-void FixRigidAbrade::offset_mesh_outwards(void){
-
-  int nlocal = atom->nlocal;
-  double *radius = atom->radius;
-  double **x = atom->x;
-
-
-  for (int i = 0; i < nlocal; i++){
-
-    if (atom2body[i] < 0) continue;
-
-    // Only processing properties relevant to bodies which have abraded and changed shape
-    if (!body[atom2body[i]].abraded_flag) continue;
-
-    if (bodytag[i] == atom->tag[i]) continue;
-
-    Body *b = &body[atom2body[i]];
-
-
-    // offsetting atoms outwards towards the COM by the atoms radius  
-    double len_i = MathExtra::len3(displace[i]);
-    displace[i][0] = displace[i][0] * (1.0 + radius[i]/len_i);
-    displace[i][1] = displace[i][1] * (1.0 + radius[i]/len_i);
-    displace[i][2] = displace[i][2] * (1.0 + radius[i]/len_i);
-
-
-    MathExtra::matvec(b->ex_space, b->ey_space, b->ez_space, displace[i], x[i]);
-
-    // This transormation is with respect to (0,0,0) in the global coordinate space, so we need to translate the position of atom i by the postition of its body's COM
-    // Additionally, we map back into periodic box via xbox,ybox,zbox
-    // same for triclinic, we add in box tilt factors as well
-
-    int xbox, ybox, zbox;
-    double xprd = domain->xprd;
-    double yprd = domain->yprd;
-    double zprd = domain->zprd;
-
-    double xy = domain->xy;
-    double xz = domain->xz;
-    double yz = domain->yz;
-
-    xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
-    ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
-    zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
-
-    // add center of mass to displacement
-    if (triclinic == 0) {
-      x[i][0] += b->xcm[0] - xbox * xprd;
-      x[i][1] += b->xcm[1] - ybox * yprd;
-      x[i][2] += b->xcm[2] - zbox * zprd;
-    } else {
-      x[i][0] += b->xcm[0] - xbox * xprd - ybox * xy - zbox * xz;
-      x[i][1] += b->xcm[1] - ybox * yprd - zbox * yz;
-      x[i][2] += b->xcm[2] - zbox * zprd;
-    }
-  }
-}
-
-
-/* ----------------------------------------------------------------------
-  Calaulte the displacement velocity of an abrading atom in the global
+  Calaulte the dispalcement velocity of an abrading atom in the global
   coordinate system
 ------------------------------------------------------------------------- */
 
@@ -2794,6 +2623,7 @@ void FixRigidAbrade::remesh(std::vector<int> dlist)
 
 void FixRigidAbrade::compute_forces_and_torques()
 {
+
   int i, ibody;
 
   // sum over atoms to get force and torque on rigid body
@@ -3005,7 +2835,7 @@ void FixRigidAbrade::final_integrate()
   comm->forward_comm(this, 1);
 
   offset_mesh_outwards();
-
+  
   // recalculate properties and normals for each abraded body
   if (dynamic_flag) resetup_bodies_static();
 
@@ -3017,6 +2847,7 @@ void FixRigidAbrade::final_integrate()
 
   // recalculate areas and normals using the updated body coordinates stored in displace[i] (also check if remeshing is required)
   areas_and_normals();
+  
   offset_mesh_inwards();
 
   // Setting the displacement velocities and wear energy of all atoms back to 0
@@ -3028,6 +2859,143 @@ void FixRigidAbrade::final_integrate()
 
   // setting all abraded_flags for owned and ghost bodies back to 0 in preparation for the following timestep
   for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].abraded_flag = 0;
+
+}
+
+/* ----------------------------------------------------------------------
+  Offsetting the positions of atom inwards towards the COM by by their radius.
+  ---------------------------------------------------------------------- */
+void FixRigidAbrade::offset_mesh_inwards(){
+
+
+  int nlocal = atom->nlocal;
+  double *radius = atom->radius;
+  double **x = atom->x;
+
+
+  for (int i = 0; i < nlocal; i++){
+
+    if (atom2body[i] < 0) continue;
+
+    // Only processing properties relevant to bodies which have abraded and changed shape
+    if (!body[atom2body[i]].offset_flag) continue;
+
+    if (bodytag[i] == atom->tag[i]) continue;
+
+    Body *b = &body[atom2body[i]];
+
+
+    // offsetting atoms outwards towards the COM by the atoms radius  
+    double len_i = MathExtra::len3(displace[i]);
+    displace[i][0] = displace[i][0] * (1.0 - radius[i]/len_i);
+    displace[i][1] = displace[i][1] * (1.0 - radius[i]/len_i);
+    displace[i][2] = displace[i][2] * (1.0 - radius[i]/len_i);
+
+
+    MathExtra::matvec(b->ex_space, b->ey_space, b->ez_space, displace[i], x[i]);
+
+    // This transormation is with respect to (0,0,0) in the global coordinate space, so we need to translate the position of atom i by the postition of its body's COM
+    // Additionally, we map back into periodic box via xbox,ybox,zbox
+    // same for triclinic, we add in box tilt factors as well
+
+    int xbox, ybox, zbox;
+    double xprd = domain->xprd;
+    double yprd = domain->yprd;
+    double zprd = domain->zprd;
+
+    double xy = domain->xy;
+    double xz = domain->xz;
+    double yz = domain->yz;
+
+    xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
+    ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
+    zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
+
+    // add center of mass to displacement
+    if (triclinic == 0) {
+      x[i][0] += b->xcm[0] - xbox * xprd;
+      x[i][1] += b->xcm[1] - ybox * yprd;
+      x[i][2] += b->xcm[2] - zbox * zprd;
+    } else {
+      x[i][0] += b->xcm[0] - xbox * xprd - ybox * xy - zbox * xz;
+      x[i][1] += b->xcm[1] - ybox * yprd - zbox * yz;
+      x[i][2] += b->xcm[2] - zbox * zprd;
+    }
+  }
+
+  for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
+    if (body[ibody].offset_flag){
+      body[ibody].abraded_flag = 1;
+      body[ibody].offset_flag = 0;
+    }
+  }
+
+  commflag = DISPLACE;
+  comm->forward_comm(this, 3);
+
+
+}
+
+/* ----------------------------------------------------------------------
+  Offsetting the positions of atom outwards away from the COM by by their radius.
+  ---------------------------------------------------------------------- */
+void FixRigidAbrade::offset_mesh_outwards(){
+
+
+  int nlocal = atom->nlocal;
+  double *radius = atom->radius;
+  double **x = atom->x;
+
+
+  for (int i = 0; i < nlocal; i++){
+
+    if (atom2body[i] < 0) continue;
+
+    // Only processing properties relevant to bodies which have abraded and changed shape
+    if (!body[atom2body[i]].abraded_flag) continue;
+
+    if (bodytag[i] == atom->tag[i]) continue;
+
+    Body *b = &body[atom2body[i]];
+
+
+    // offsetting atoms outwards towards the COM by the atoms radius  
+    double len_i = MathExtra::len3(displace[i]);
+    displace[i][0] = displace[i][0] * (1.0 + radius[i]/len_i);
+    displace[i][1] = displace[i][1] * (1.0 + radius[i]/len_i);
+    displace[i][2] = displace[i][2] * (1.0 + radius[i]/len_i);
+
+
+    MathExtra::matvec(b->ex_space, b->ey_space, b->ez_space, displace[i], x[i]);
+
+    // This transormation is with respect to (0,0,0) in the global coordinate space, so we need to translate the position of atom i by the postition of its body's COM
+    // Additionally, we map back into periodic box via xbox,ybox,zbox
+    // same for triclinic, we add in box tilt factors as well
+
+    int xbox, ybox, zbox;
+    double xprd = domain->xprd;
+    double yprd = domain->yprd;
+    double zprd = domain->zprd;
+
+    double xy = domain->xy;
+    double xz = domain->xz;
+    double yz = domain->yz;
+
+    xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
+    ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
+    zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
+
+    // add center of mass to displacement
+    if (triclinic == 0) {
+      x[i][0] += b->xcm[0] - xbox * xprd;
+      x[i][1] += b->xcm[1] - ybox * yprd;
+      x[i][2] += b->xcm[2] - zbox * zprd;
+    } else {
+      x[i][0] += b->xcm[0] - xbox * xprd - ybox * xy - zbox * xz;
+      x[i][1] += b->xcm[1] - ybox * yprd - zbox * yz;
+      x[i][2] += b->xcm[2] - zbox * zprd;
+    }
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -3814,9 +3782,9 @@ void FixRigidAbrade::setup_bodies_static()
   AtomVecTri::Bonus *tbonus;
   if (avec_tri) tbonus = avec_tri->bonus;
   double **mu = atom->mu;
+  double *radius = atom->radius;
   double *rmass = atom->rmass;
   double *mass = atom->mass;
-  double *radius = atom->radius;
   int *ellipsoid = atom->ellipsoid;
   int *line = atom->line;
   int *tri = atom->tri;
@@ -3983,6 +3951,7 @@ void FixRigidAbrade::setup_bodies_static()
     // std::cout << me << ": Angle [" << n+1 << "]: " << atom->tag[i1] << "->" << atom->tag[i2] << "->" << atom->tag[i3] << std::endl;
 
     xcm = b->xcm;
+    xgc = b->xgc;
 
     b->volume += ((((unwrap[i2][1] - unwrap[i1][1]) * (unwrap[i3][2] - unwrap[i1][2])) -
                    ((unwrap[i3][1] - unwrap[i1][1]) * (unwrap[i2][2] - unwrap[i1][2]))) *
@@ -4007,11 +3976,29 @@ void FixRigidAbrade::setup_bodies_static()
          (((unwrap[i1][2] * unwrap[i1][2]) + unwrap[i2][2] * (unwrap[i1][2] + unwrap[i2][2])) +
           unwrap[i3][2] * ((unwrap[i1][2] + unwrap[i2][2]) + unwrap[i3][2]))) /
         24.0;
+    xgc[0] +=
+        ((((unwrap[i2][1] - unwrap[i1][1]) * (unwrap[i3][2] - unwrap[i1][2])) -
+          ((unwrap[i3][1] - unwrap[i1][1]) * (unwrap[i2][2] - unwrap[i1][2]))) *
+         (((unwrap[i1][0] * unwrap[i1][0]) + unwrap[i2][0] * (unwrap[i1][0] + unwrap[i2][0])) +
+          unwrap[i3][0] * ((unwrap[i1][0] + unwrap[i2][0]) + unwrap[i3][0]))) /
+        24.0;
+    xgc[1] +=
+        ((((unwrap[i3][0] - unwrap[i1][0]) * (unwrap[i2][2] - unwrap[i1][2])) -
+          ((unwrap[i2][0] - unwrap[i1][0]) * (unwrap[i3][2] - unwrap[i1][2]))) *
+         (((unwrap[i1][1] * unwrap[i1][1]) + unwrap[i2][1] * (unwrap[i1][1] + unwrap[i2][1])) +
+          unwrap[i3][1] * ((unwrap[i1][1] + unwrap[i2][1]) + unwrap[i3][1]))) /
+        24.0;
+    xgc[2] +=
+        ((((unwrap[i2][0] - unwrap[i1][0]) * (unwrap[i3][1] - unwrap[i1][1])) -
+          ((unwrap[i3][0] - unwrap[i1][0]) * (unwrap[i2][1] - unwrap[i1][1]))) *
+         (((unwrap[i1][2] * unwrap[i1][2]) + unwrap[i2][2] * (unwrap[i1][2] + unwrap[i2][2])) +
+          unwrap[i3][2] * ((unwrap[i1][2] + unwrap[i2][2]) + unwrap[i3][2]))) /
+        24.0;
   }
 
   // reverse communicate xcm, mass of all bodies
-  commflag = XCM_VOL;
-  comm->reverse_comm(this, 5);
+  commflag = XCM_MASS;
+  comm->reverse_comm(this, 9);
 
   // ---------------------------------------------------- PRINTING ---------------------------------------------------
   std::cout << " ---------------------- " << nlocal_body << "(" << nghost_body
@@ -4033,14 +4020,18 @@ void FixRigidAbrade::setup_bodies_static()
     xcm[0] /= body[ibody].volume;
     xcm[1] /= body[ibody].volume;
     xcm[2] /= body[ibody].volume;
-    xgc[0] = xcm[0];
-    xgc[1] = xcm[1];
-    xgc[2] = xcm[2];
+    xgc[0] /= body[ibody].volume;
+    xgc[1] /= body[ibody].volume;
+    xgc[2] /= body[ibody].volume;
 
     // Setting the mass of each body
     body[ibody].mass = body[ibody].volume * density;
     atom->radius[body[ibody].ilocal] /= 5;
   }
+
+  // Forward communicate body mass and natoms to ghost bodies so the mass of their atoms can be set
+  commflag = MASS_NATOMS;
+  comm->forward_comm(this, 2);
 
   // set vcm, angmom = 0.0 in case inpfile is used
   // and doesn't overwrite all body's values
@@ -4337,14 +4328,6 @@ void FixRigidAbrade::setup_bodies_static()
   commflag = DISPLACE;
   comm->forward_comm(this, 3);
 
-  for (ibody = 0; ibody < nlocal_body; ibody++) {
-    std::cout << me << ": Body " << ibody << " inertia: (" << body[ibody].inertia[0] << ", "
-              << body[ibody].inertia[1] << ", " << body[ibody].inertia[2] << ") Volume: " << body[ibody].volume
-              << " Mass: " << body[ibody].mass << " Density: " << body[ibody].density << " COM: ("
-              << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", " << body[ibody].xcm[2] << ") "
-              << std::endl;
-  }
-
   // test for valid principal moments & axes
   // recompute moments of inertia around new axes
   // 3 diagonal moments should equal principal moments
@@ -4509,27 +4492,27 @@ void FixRigidAbrade::setup_bodies_static()
   commflag = ITENSOR;
   comm->reverse_comm(this, 6);
 
-  // if (nlocal_body > 0)
-  //   std::cout << me << ": Body " << 0 << " inertia: (" << body[0].inertia[0] << ", "
-  //             << body[0].inertia[1] << ", " << body[0].inertia[2] << ") Volume: " << body[0].volume
-  //             << " Mass: " << body[0].mass << " Density: " << body[0].density << " COM: ("
-  //             << body[0].xcm[0] << ", " << body[0].xcm[1] << ", " << body[0].xcm[2] << ") "
-  //             << std::endl;
-  // for (ibody = 0; ibody < nlocal_body; ibody++) {
-  //   // std::cout << me << ": testing body " << ibody << std::endl;
-  //   if ((std::ceil(body[ibody].inertia[0] * 10.0) / 10.0) !=
-  //           (std::ceil(body[(ibody + 1) % nlocal_body].inertia[0] * 10.0) / 10.0) ||
-  //       (std::ceil(body[ibody].inertia[1] * 10.0) / 10.0) !=
-  //           (std::ceil(body[(ibody + 1) % nlocal_body].inertia[1] * 10.0) / 10.0) ||
-  //       (std::ceil(body[ibody].inertia[2] * 10.0) / 10.0) !=
-  //           (std::ceil(body[(ibody + 1) % nlocal_body].inertia[2] * 10.0) / 10.0)) {
-  //     std::cout << me << ": Dissagreement with Body " << ibody << " inertia: ("
-  //               << body[ibody].inertia[0] << ", " << body[ibody].inertia[1] << ", "
-  //               << body[ibody].inertia[2] << ") Volume: " << body[ibody].volume
-  //               << " Mass: " << body[ibody].mass << " Density: " << body[ibody].density
-  //               << std::endl;
-  //   }
-  // }
+  if (nlocal_body > 0)
+    std::cout << me << ": Body " << 0 << " inertia: (" << body[0].inertia[0] << ", "
+              << body[0].inertia[1] << ", " << body[0].inertia[2] << ") Volume: " << body[0].volume
+              << " Mass: " << body[0].mass << " Density: " << body[0].density << " COM: ("
+              << body[0].xcm[0] << ", " << body[0].xcm[1] << ", " << body[0].xcm[2] << ") "
+              << std::endl;
+  for (ibody = 0; ibody < nlocal_body; ibody++) {
+    // std::cout << me << ": testing body " << ibody << std::endl;
+    if ((std::ceil(body[ibody].inertia[0] * 10.0) / 10.0) !=
+            (std::ceil(body[(ibody + 1) % nlocal_body].inertia[0] * 10.0) / 10.0) ||
+        (std::ceil(body[ibody].inertia[1] * 10.0) / 10.0) !=
+            (std::ceil(body[(ibody + 1) % nlocal_body].inertia[1] * 10.0) / 10.0) ||
+        (std::ceil(body[ibody].inertia[2] * 10.0) / 10.0) !=
+            (std::ceil(body[(ibody + 1) % nlocal_body].inertia[2] * 10.0) / 10.0)) {
+      std::cout << me << ": Dissagreement with Body " << ibody << " inertia: ("
+                << body[ibody].inertia[0] << ", " << body[ibody].inertia[1] << ", "
+                << body[ibody].inertia[2] << ") Volume: " << body[ibody].volume
+                << " Mass: " << body[ibody].mass << " Density: " << body[ibody].density
+                << std::endl;
+    }
+  }
 
   if (dynamic_flag) {    // error check that re-computed moments of inertia match diagonalized ones
     // do not do test for bodies with params read from inpfile
@@ -4678,6 +4661,7 @@ void FixRigidAbrade::resetup_bodies_static()
     Body *b = &body[atom2body[i1]];
 
     xcm = b->xcm;
+    xgc = b->xgc;
 
     b->volume += ((((unwrap[i2][1] - unwrap[i1][1]) * (unwrap[i3][2] - unwrap[i1][2])) -
                    ((unwrap[i3][1] - unwrap[i1][1]) * (unwrap[i2][2] - unwrap[i1][2]))) *
@@ -4702,11 +4686,29 @@ void FixRigidAbrade::resetup_bodies_static()
          (((unwrap[i1][2] * unwrap[i1][2]) + unwrap[i2][2] * (unwrap[i1][2] + unwrap[i2][2])) +
           unwrap[i3][2] * ((unwrap[i1][2] + unwrap[i2][2]) + unwrap[i3][2]))) /
         24.0;
+    xgc[0] +=
+        ((((unwrap[i2][1] - unwrap[i1][1]) * (unwrap[i3][2] - unwrap[i1][2])) -
+          ((unwrap[i3][1] - unwrap[i1][1]) * (unwrap[i2][2] - unwrap[i1][2]))) *
+         (((unwrap[i1][0] * unwrap[i1][0]) + unwrap[i2][0] * (unwrap[i1][0] + unwrap[i2][0])) +
+          unwrap[i3][0] * ((unwrap[i1][0] + unwrap[i2][0]) + unwrap[i3][0]))) /
+        24.0;
+    xgc[1] +=
+        ((((unwrap[i3][0] - unwrap[i1][0]) * (unwrap[i2][2] - unwrap[i1][2])) -
+          ((unwrap[i2][0] - unwrap[i1][0]) * (unwrap[i3][2] - unwrap[i1][2]))) *
+         (((unwrap[i1][1] * unwrap[i1][1]) + unwrap[i2][1] * (unwrap[i1][1] + unwrap[i2][1])) +
+          unwrap[i3][1] * ((unwrap[i1][1] + unwrap[i2][1]) + unwrap[i3][1]))) /
+        24.0;
+    xgc[2] +=
+        ((((unwrap[i2][0] - unwrap[i1][0]) * (unwrap[i3][1] - unwrap[i1][1])) -
+          ((unwrap[i3][0] - unwrap[i1][0]) * (unwrap[i2][1] - unwrap[i1][1]))) *
+         (((unwrap[i1][2] * unwrap[i1][2]) + unwrap[i2][2] * (unwrap[i1][2] + unwrap[i2][2])) +
+          unwrap[i3][2] * ((unwrap[i1][2] + unwrap[i2][2]) + unwrap[i3][2]))) /
+        24.0;
   }
 
   // reverse communicate xcm, mass of all bodies
-  commflag = XCM_VOL;
-  comm->reverse_comm(this, 5);
+  commflag = XCM_MASS;
+  comm->reverse_comm(this, 9);
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
 
@@ -4720,9 +4722,9 @@ void FixRigidAbrade::resetup_bodies_static()
     xcm[0] /= body[ibody].volume;
     xcm[1] /= body[ibody].volume;
     xcm[2] /= body[ibody].volume;
-    xgc[0] = xcm[0];
-    xgc[1] = xcm[1];
-    xgc[2] = xcm[2];
+    xgc[0] /= body[ibody].volume;
+    xgc[1] /= body[ibody].volume;
+    xgc[2] /= body[ibody].volume;
 
     // Setting the mass of each body
     body[ibody].mass = body[ibody].volume * density;
@@ -5865,12 +5867,6 @@ void FixRigidAbrade::set_arrays(int i)
   vertexdata[i][6] = 0.0;
   vertexdata[i][7] = 0.0;
   vertexdata[i][8] = 0.0;
-  vertexdata[i][9] = 0.0;
-  vertexdata[i][10] = 0.0;
-  vertexdata[i][11] = 0.0;
-  vertexdata[i][12] = 0.0;
-  vertexdata[i][13] = 0.0;
-  vertexdata[i][14] = 0.0;
 
   // must also zero vatom if per-atom virial calculated on this timestep
   // since vatom is calculated before and after atom migration
@@ -6186,19 +6182,6 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf, int /*pbc_f
       buf[m++] = unwrap[j][2];
     }
 
-  }  else if (commflag == XCM) {
-    for (i = 0; i < n; i++) {
-      j = list[i];
-
-      // Only communicating properties relevant to bodies which have abraded and changed shape
-      if (atom2body[j] < 0) continue;
-      if (!body[atom2body[j]].abraded_flag) continue;
-
-      buf[m++] = body[atom2body[j]].xcm[0];
-      buf[m++] = body[atom2body[j]].xcm[1];
-      buf[m++] = body[atom2body[j]].xcm[2];
-    }
-
   } else if (commflag == NEW_ANGLES) {
 
     // TODO: Can we only cycle through dlist atoms rather than all owned atoms?
@@ -6402,18 +6385,6 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
       unwrap[i][2] = buf[m++];
     }
 
-  } else if (commflag == XCM) {
-    for (i = first; i < last; i++) {
-
-      // Only communicating properties relevant to bodies which have abraded and changed shape
-      if (atom2body[i] < 0) continue;
-      if (!body[atom2body[i]].abraded_flag) continue;
-
-      body[atom2body[i]].xcm[0] = buf[m++];
-      body[atom2body[i]].xcm[1] = buf[m++];
-      body[atom2body[i]].xcm[2] = buf[m++];
-    }
-
   } else if (commflag == NEW_ANGLES) {
     for (i = first; i < last; i++) {
 
@@ -6564,7 +6535,7 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
       buf[m++] = angmom[2];
     }
 
-  } else if (commflag == XCM_VOL) {
+  } else if (commflag == XCM_MASS) {
     for (i = first; i < last; i++) {
 
       // Only communicating properties relevant to bodies which have abraded and changed shape
@@ -6572,9 +6543,14 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
       if (!body[bodyown[i]].abraded_flag) continue;
 
       xcm = body[bodyown[i]].xcm;
+      xgc = body[bodyown[i]].xgc;
       buf[m++] = xcm[0];
       buf[m++] = xcm[1];
       buf[m++] = xcm[2];
+      buf[m++] = xgc[0];
+      buf[m++] = xgc[1];
+      buf[m++] = xgc[2];
+      buf[m++] = body[bodyown[i]].mass;
       buf[m++] = body[bodyown[i]].volume;
       buf[m++] = static_cast<double>(body[bodyown[i]].natoms);
     }
@@ -6718,7 +6694,7 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
       angmom[2] += buf[m++];
     }
 
-  } else if (commflag == XCM_VOL) {
+  } else if (commflag == XCM_MASS) {
     for (i = 0; i < n; i++) {
       j = list[i];
 
@@ -6727,9 +6703,14 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
       if (!body[bodyown[j]].abraded_flag) continue;
 
       xcm = body[bodyown[j]].xcm;
+      xgc = body[bodyown[j]].xgc;
       xcm[0] += buf[m++];
       xcm[1] += buf[m++];
       xcm[2] += buf[m++];
+      xgc[0] += buf[m++];
+      xgc[1] += buf[m++];
+      xgc[2] += buf[m++];
+      body[bodyown[j]].mass += buf[m++];
       body[bodyown[j]].volume += buf[m++];
       body[bodyown[j]].natoms += static_cast<int>(buf[m++]);
     }
