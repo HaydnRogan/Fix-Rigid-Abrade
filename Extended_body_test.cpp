@@ -821,7 +821,7 @@ void FixRigidAbrade::setup_pre_neighbor()
     setup_bodies_dynamic();
     
     for (int ibody = 0; ibody < nlocal_body; ibody ++) body[ibody].abraded_flag = 1;
-    offset_mesh_inwards();
+    // offset_mesh_inwards();
     for (int ibody = 0; ibody < nlocal_body; ibody ++) body[ibody].abraded_flag = 0;
   }
 }
@@ -2826,19 +2826,19 @@ void FixRigidAbrade::final_integrate()
   }
 
   // reverse and forward communication are required to consistently set the abraded_flag for both owned and ghost bodies across all processors
-
   commflag = ABRADED_FLAG;
   comm->reverse_comm(this, 1);
 
   commflag = ABRADED_FLAG;
   comm->forward_comm(this, 1);
 
-  offset_mesh_outwards();
-  
+  // scale atoms positions outwards from the COM so that the mesh vertices are placed at the centre of the surface atoms.
+  // offset_mesh_outwards();  
+
   // recalculate properties and normals for each abraded body
   if (dynamic_flag) resetup_bodies_static();
 
-  // if resetup_bodies_static() is not called then displace[i] is not communicated to ghosts.
+  // if resetup_bodies_static() is not called then displace[i] is not communicated to ghosts for use in areas_and_normals()
   else {
     commflag = DISPLACE;
     comm->forward_comm(this, 3);
@@ -2846,8 +2846,9 @@ void FixRigidAbrade::final_integrate()
 
   // recalculate areas and normals using the updated body coordinates stored in displace[i] (also check if remeshing is required)
   areas_and_normals();
-  
-  offset_mesh_inwards();
+
+  // scale atom positions back so that the mesh vertices lay on the surface of the atoms
+  // offset_mesh_inwards();
 
   // Setting the displacement velocities and wear energy of all atoms back to 0
   for (int i = 0; i < nlocal; i++) {
@@ -2858,7 +2859,6 @@ void FixRigidAbrade::final_integrate()
 
   // setting all abraded_flags for owned and ghost bodies back to 0 in preparation for the following timestep
   for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].abraded_flag = 0;
-
 }
 
 /* ----------------------------------------------------------------------
@@ -3001,9 +3001,34 @@ void FixRigidAbrade::offset_mesh_outwards(){
 
 void FixRigidAbrade::end_of_step()
 {
-
   // if remeshing has been processed on the current timestep we rebuild the neighbor list and formally remove dlist atoms
   if (remesh_rebuild_flag) {
+
+                // // setting all abraded_flags for owned and ghost bodies back to 0 in preparation for the following timestep
+                // for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].abraded_flag = 1;
+
+                // // scale atoms positions outwards from the COM so that the mesh vertices are placed at the centre of the surface atoms.
+                // // offset_mesh_outwards();  
+
+                // std::cout << "resetting up bodies in end of step at t = " << update->ntimestep << std::endl;
+                // // recalculate properties and normals for each abraded body
+                // if (dynamic_flag) resetup_bodies_static();
+
+                // // if resetup_bodies_static() is not called then displace[i] is not communicated to ghosts for use in areas_and_normals()
+                // else {
+                //   commflag = DISPLACE;
+                //   comm->forward_comm(this, 3);
+                // }
+
+                // // recalculate areas and normals using the updated body coordinates stored in displace[i] (also check if remeshing is required)
+                // areas_and_normals();
+
+                // // scale atom positions back so that the mesh vertices lay on the surface of the atoms
+                // // offset_mesh_inwards();
+
+                // // setting all abraded_flags for owned and ghost bodies back to 0 in preparation for the following timestep
+                // for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].abraded_flag = 0;
+
 
     // decrement atom->nangles by global number of angle change
     int all;
@@ -3065,37 +3090,61 @@ void FixRigidAbrade::end_of_step()
     neighbor->build(1);
     for (auto &fix_i : fix_list) fix_i->post_neighbor();
 
-    neighbor->ago = -1;
-
-    // clearing remeshing arrays and resetting flags
-    dlist.clear();
-    body_dlist.clear();
     // Set that the neighbor list was last updates -1 timesteps ago
     // This carries this rebuild over into the next timestep for fixes (such as rigid/wall/region) that dont have a post_neighbor() function but which still check if a remeshing has happened through neighbor->ago == 0
     // If the neighbor list is rebuilt on the next step this is simply set to 0 then, if not it is incremented in neighbor->decide() to 0, thus carrying forward this rebuild into the next timestep
-    total_dlist.clear();
-
-    proc_remesh_flag = 0;
-    global_remesh_flag = 0;
-    remesh_rebuild_flag = 0;
-
-    remesh_angle_proc_difference = 0;
-    remesh_overflow_threshold = 0;
-    overflow_anglelist.clear();
+    neighbor->ago = -1;
 
     // Need to forward comm the bodies so that reset_atom2body can be assigned.
     nghost_body = 0;
     commflag = FULL_BODY;
     comm->forward_comm(this);
+    reset_atom2body();
 
-    // TODO: check if this is required? Is it not handled by avec->copy?
-    // reset interia, volume, mass, and most importantly the COM, principal axes, and displace[i] used in areas_and_normals()
-    if (dynamic_flag) {
-      offset_mesh_outwards();
-      resetup_bodies_static();
-      areas_and_normals();
-      offset_mesh_inwards();
-    }
+                // setting all abraded_flags for owned and ghost bodies back to 1 so they can be reset following a remeshing for the following timestep
+                for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].abraded_flag = 1;
+
+ 
+                  commflag = DISPLACE;
+                  comm->forward_comm(this, 3);
+                
+
+                // scale atoms positions outwards from the COM so that the mesh vertices are placed at the centre of the surface atoms.
+                // offset_mesh_outwards();  
+
+                std::cout << "resetting up bodies in end of step at t = " << update->ntimestep << std::endl;
+                // recalculate properties and normals for each abraded body
+                if (dynamic_flag) resetup_bodies_static();
+
+                // if resetup_bodies_static() is not called then displace[i] is not communicated to ghosts for use in areas_and_normals()
+                else {
+                  commflag = DISPLACE;
+                  comm->forward_comm(this, 3);
+                }
+
+                // recalculate areas and normals using the updated body coordinates stored in displace[i] (also check if remeshing is required)
+                areas_and_normals();
+
+                // scale atom positions back so that the mesh vertices lay on the surface of the atoms
+                // offset_mesh_inwards();
+
+                // setting all abraded_flags for owned and ghost bodies back to 0 in preparation for the following timestep
+                for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].abraded_flag = 0;
+
+
+    // clearing remeshing arrays and resetting flags
+    dlist.clear();
+    body_dlist.clear();
+    total_dlist.clear();
+    overflow_anglelist.clear();
+    remesh_angle_proc_difference = 0;
+    remesh_overflow_threshold = 0;
+
+    proc_remesh_flag = 0;
+    global_remesh_flag = 0;
+    remesh_rebuild_flag = 0;
+    
+    for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].abraded_flag = 0;
 
     // all other vertexdata[i][>3] are only accessed for ghost atoms. reset them here just as a precaution
     for (int i = nlocal; i < (atom->nlocal + atom->nghost); i++) {
