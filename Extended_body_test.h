@@ -87,13 +87,11 @@ class FixRigidAbrade : public Fix {
                    double[3]);
   void remesh(std::vector<int>);
 
-  void offset_mesh_inwards(void);
-  void offset_mesh_outwards(void);
-
   std::vector<int> dlist;    // list of atom tags to be remeshed on a call of remesh()
   std::vector<int>
       body_dlist;    // list of associated body tags to be remeshed. This is required since there maybe a case where a proc does not own the dlist atom and so would be unable to access body properties
   std::vector<int> total_dlist;
+  std::vector<int> total_body_dlist;
 
   // it is possible that these could be made into body properties.
   std::vector<std::vector<tagint>> boundaries;
@@ -192,7 +190,7 @@ class FixRigidAbrade : public Fix {
     double conjqm[4];      // conjugate quaternion momentum
     int remapflag[4];      // PBC remap flags
     int abraded_flag;      // flag which marks that the body has abraded and changed shape
-    int offset_flag;      // flag which marks that the body has abraded and changed shape
+    int offset_flag;       // flag which marks that the body needs to be scaled
     tagint
         remesh_atom;    // atom to be added to dlist on each call of remesh(), 0 if no atom to be added
     imageint image;    // image flags of xcm
@@ -303,6 +301,9 @@ class FixRigidAbrade : public Fix {
   void readfile(int, double **, int *);
   void grow_body();
   void reset_atom2body();
+
+  void offset_mesh_inwards(void);
+  void offset_mesh_outwards(void);
 
   // callback function for rendezvous communication
 
