@@ -825,7 +825,7 @@ void FixRigidAbrade::setup_pre_neighbor()
     setup_bodies_dynamic();
     
     for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].offset_flag = 1;
-    offset_mesh_inwards();
+    offset_vertices_inwards();
     for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].offset_flag = 0;
   }
 }
@@ -2845,7 +2845,7 @@ void FixRigidAbrade::final_integrate()
   commflag = ABRADED_FLAG;
   comm->forward_comm(this, 1);
 
-  offset_mesh_outwards();
+  offset_vertices_outwards();
 
   // recalculate properties and normals for each abraded body
   if (dynamic_flag) resetup_bodies_static();
@@ -2859,7 +2859,7 @@ void FixRigidAbrade::final_integrate()
   // recalculate areas and normals using the updated body coordinates stored in displace[i] (also check if remeshing is required)
   areas_and_normals();
 
-  offset_mesh_inwards();
+  offset_vertices_inwards();
 
   // Setting the displacement velocities and wear energy of all atoms back to 0
   for (int i = 0; i < nlocal; i++) {
@@ -2876,7 +2876,7 @@ void FixRigidAbrade::final_integrate()
 /* ----------------------------------------------------------------------
   Offsetting the positions of atom inwards towards the COM by by their radius.
   ---------------------------------------------------------------------- */
-void FixRigidAbrade::offset_mesh_inwards(){
+void FixRigidAbrade::offset_vertices_inwards(){
 
 
   int nlocal = atom->nlocal;
@@ -2945,14 +2945,12 @@ void FixRigidAbrade::offset_mesh_inwards(){
   commflag = DISPLACE;
   comm->forward_comm(this, 3);
 
-
 }
 
 /* ----------------------------------------------------------------------
   Offsetting the positions of atom outwards away from the COM by by their radius.
   ---------------------------------------------------------------------- */
-void FixRigidAbrade::offset_mesh_outwards(){
-
+void FixRigidAbrade::offset_vertices_outwards(){
 
   int nlocal = atom->nlocal;
   double *radius = atom->radius;
@@ -3113,7 +3111,7 @@ void FixRigidAbrade::end_of_step()
     
 
     // std::cout << me << ": end of step resetup at t = " << update->ntimestep << std::endl;
-    offset_mesh_outwards();
+    offset_vertices_outwards();
 
     // volume, mass, and intertia of remeshed bodies has not yet been updated. These need to be updated, which in turn will alter displace[i] for the 
     // body. Areas_and_normals() must be calculated for these updated body coordinates. 
@@ -3121,7 +3119,7 @@ void FixRigidAbrade::end_of_step()
     if (dynamic_flag) {
       resetup_bodies_static();
       areas_and_normals();
-      offset_mesh_inwards();
+      offset_vertices_inwards();
     }
 
     for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].abraded_flag = 0;
@@ -4097,9 +4095,18 @@ void FixRigidAbrade::setup_bodies_static()
     xgc[1] = xcm[1];
     xgc[2] = xcm[2];
 
+
+    // Positioning the owning atom at the COM
+    x[body[ibody].ilocal][0] = xcm[0];
+    x[body[ibody].ilocal][1] = xcm[1];
+    x[body[ibody].ilocal][2] = xcm[2];
+
+    // scaling central atom down to ensure it does not extend outside of the body
+    atom->radius[body[ibody].ilocal] /= 5;
+
     // Setting the mass of each body
     body[ibody].mass = body[ibody].volume * density;
-    atom->radius[body[ibody].ilocal] /= 5;
+    
   }
 
   // set vcm, angmom = 0.0 in case inpfile is used
@@ -4777,6 +4784,11 @@ void FixRigidAbrade::resetup_bodies_static()
     xgc[1] = xcm[1];
     xgc[2] = xcm[2];
 
+    // Positioning the owning atom at the COM
+    x[body[ibody].ilocal][0] = xcm[0];
+    x[body[ibody].ilocal][1] = xcm[1];
+    x[body[ibody].ilocal][2] = xcm[2];
+
     // Setting the mass of each body
     body[ibody].mass = body[ibody].volume * density;
   }
@@ -4809,11 +4821,6 @@ void FixRigidAbrade::resetup_bodies_static()
   memory->create(itensor, nlocal_body + nghost_body, 6, "rigid/abrade:itensor");
   for (ibody = 0; ibody < nlocal_body + nghost_body; ibody++) {
     for (i = 0; i < 6; i++) itensor[ibody][i] = 0.0;
-
-    // Positioning the owning atom at the COM
-    x[body[ibody].ilocal][0] = body[ibody].xcm[0];
-    x[body[ibody].ilocal][1] = body[ibody].xcm[1];
-    x[body[ibody].ilocal][2] = body[ibody].xcm[2];
   }
 
   double dx, dy, dz;
