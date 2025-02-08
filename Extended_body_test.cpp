@@ -1624,10 +1624,10 @@ void FixRigidAbrade::areas_and_normals()
     commflag = MIN_AREA;
     comm->forward_comm(this, 5);
 
-    for (int ibody = 0; ibody < (nlocal_body); ibody++) {
-        if (!body[ibody].abraded_flag) continue;
-        std::cout << me << ": t = " << update->ntimestep << " body " << atom->tag[body[ibody].ilocal] << " min area atom: " << body[ibody].min_area_atom_tag << "(" << body[ibody].min_area_atom << ")" << std::endl;
-    }
+    // for (int ibody = 0; ibody < (nlocal_body); ibody++) {
+    //     if (!body[ibody].abraded_flag) continue;
+    //     std::cout << me << ": t = " << update->ntimestep << " body " << atom->tag[body[ibody].ilocal] << " min area atom: " << body[ibody].min_area_atom_tag << "(" << body[ibody].min_area_atom << ")" << std::endl;
+    // }
     // Checking if the surface density of any bodies requires that they be remeshed
     for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
 
@@ -3162,11 +3162,12 @@ void FixRigidAbrade::end_of_step()
     dx[1] = unwrap[i][1] - xcm[1];
     dx[2] = unwrap[i][2] - xcm[2];
 
-    offset = (1.0 + radius[i] / MathExtra::len3(dx));
-    dx[0] *= offset;
-    dx[1] *= offset;
-    dx[2] *= offset;
-  
+    if (atom->tag[i] != atom->tag[body[atom2body[i]].ilocal]) {
+      offset = (1.0 + radius[i] / MathExtra::len3(dx));
+      dx[0] *= offset;
+      dx[1] *= offset;
+      dx[2] *= offset;
+    }
     // add center of mass to displacement
     if (triclinic == 0) {
       vertexdata[i][12] = dx[0] + xcm[0] - xbox * xprd;
@@ -4794,7 +4795,7 @@ void FixRigidAbrade::resetup_bodies_static()
   }
 
   // remap the xcm of each body back into simulation box
-  //   and reset body and atom xcmimage flags via pre_neighbor()
+  // and reset body and atom xcmimage flags via pre_neighbor()
 
   pre_neighbor();
 
@@ -5296,16 +5297,44 @@ void FixRigidAbrade::resetup_bodies_static()
   memory->destroy(itensor);
 
 
-    for (int ibody = 0; ibody < (nlocal_body); ibody++){
+    // for (int ibody = 0; ibody < (nlocal_body); ibody++){
 
+    //   if (!body[ibody].abraded_flag) continue;
+
+    // std::cout << me << ": t = " << update->ntimestep << "  Resetup Body " << atom->tag[body[ibody].ilocal] << " inertia: (" << body[ibody].inertia[0] << ", "
+    //           << body[ibody].inertia[1] << ", " << body[ibody].inertia[2] << ") Volume: " << body[ibody].volume
+    //           << " Mass: " << body[ibody].mass << " Density: " << body[ibody].density << " COM: ("
+    //           << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", " << body[ibody].xcm[2] << ") "
+    //           << std::endl;}
+
+    // map owning atoms back to the simulations cell in line with the bodies' COM
+    int xbox, ybox, zbox;
+    double xprd = domain->xprd;
+    double yprd = domain->yprd;
+    double zprd = domain->zprd;
+    double xy = domain->xy;
+    double xz = domain->xz;
+    double yz = domain->yz;
+    
+    for (int ibody = 0; ibody < nlocal_body; ibody++) {
       if (!body[ibody].abraded_flag) continue;
+      
+      i = body[ibody].ilocal;
+      
+      xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
+      ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
+      zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
 
-    std::cout << me << ": t = " << update->ntimestep << "  Resetup Body " << atom->tag[body[ibody].ilocal] << " inertia: (" << body[ibody].inertia[0] << ", "
-              << body[ibody].inertia[1] << ", " << body[ibody].inertia[2] << ") Volume: " << body[ibody].volume
-              << " Mass: " << body[ibody].mass << " Density: " << body[ibody].density << " COM: ("
-              << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", " << body[ibody].xcm[2] << ") "
-              << std::endl;}
-
+      if (triclinic == 0) {
+        x[i][0] = body[ibody].xcm[0] - xbox * xprd;
+        x[i][1] = body[ibody].xcm[1] - ybox * yprd;
+        x[i][2] = body[ibody].xcm[2] - zbox * zprd;
+      } else {
+        x[i][0] = body[ibody].xcm[0] - xbox * xprd - ybox * xy - zbox * xz;
+        x[i][1] = body[ibody].xcm[1] - ybox * yprd - zbox * yz;
+        x[i][2] = body[ibody].xcm[2] - zbox * zprd;
+      }
+    }
 
 }
 
