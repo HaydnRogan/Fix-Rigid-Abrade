@@ -789,76 +789,8 @@ void FixRigidAbrade::setup_pre_neighbor()
     // building topology for use in setup_bodies_static()
     neighbor->build_topology();
 
-    if (update->ntimestep > 0){
-
-      nghost_body = 0;
-      commflag = FULL_BODY;
-      comm->forward_comm(this);
-      reset_atom2body();
-      
-      // set body xcmimage flags = true image flags
-      imageint *image = atom->image;
-      for (int i = 0; i < atom->nlocal; i++)
-        if (bodytag[i] >= 0)
-          xcmimage[i] = image[i];
-        else
-          xcmimage[i] = 0;
-
-      double **x = atom->x;
-
-      std::cout << "attempting to restart at t = " << update->ntimestep << std::endl;
-
-      for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
-        body[ibody].xcm[0] = x[body[ibody].ilocal][0];
-        body[ibody].xcm[1] = x[body[ibody].ilocal][1];
-        body[ibody].xcm[2] = x[body[ibody].ilocal][2];
-        
-        body[ibody].ex_space[0] = 1.0; body[ibody].ex_space[1] = 0.0; body[ibody].ex_space[2] = 0.0;
-        body[ibody].ey_space[0] = 0.0; body[ibody].ey_space[1] = 1.0; body[ibody].ey_space[2] = 0.0;
-        body[ibody].ez_space[0] = 0.0; body[ibody].ez_space[1] = 0.0; body[ibody].ez_space[2] = 1.0;
-        
-        body[ibody].offset_flag = 1;
-        body[ibody].abraded_flag = 1;
-      }
-
-      commflag = XCM;
-      comm->forward_comm(this,3);
-
-    // Cycling through the local atoms and storing their unwrapped coordinates.
-    for (int i = 0; i < atom->nlocal; i++) {
-      if (atom2body[i] < 0) continue;
-      // Calculated unwrapped coords for all atoms in bodies
-      domain->unmap(x[i], xcmimage[i], unwrap[i]);
-    }
-
-    // communicate unwrapped position of owned atoms to ghost atoms
-    commflag = UNWRAP;
-    comm->forward_comm(this, 3);
-
-    for (int i = 0; i < (atom->nlocal); i++) {
-      displace[i][0] =  -(unwrap[body[atom2body[i]].ilocal][0] -  unwrap[i][0]);
-      displace[i][1] =  -(unwrap[body[atom2body[i]].ilocal][1] -  unwrap[i][1]);
-      displace[i][2] =  -(unwrap[body[atom2body[i]].ilocal][2] -  unwrap[i][2]);
-    }
-    
-    offset_vertices_outwards();
-
-    for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) {
-      body[ibody].offset_flag = 0;
-      body[ibody].abraded_flag = 0;}
-
-
-  // std::cout << " -------- Calling pre_neighbor() t = " << update->ntimestep << " ------------" << std::endl;
-  for (int i = 0; i < (atom->nlocal); i++) {
-    domain->remap(atom->x[i], atom->image[i]);
-  }
-
-    pre_neighbor();
-
-    std::cout << "  finished offsetting atoms outwards following restart" << std::endl;
-
-    }
-
+    if (update->ntimestep > 0) 
+      pre_setup_bodies_static();
 
     // calcualting initial mass, volume, and inertia of particles from their topology
     setup_bodies_static();
@@ -3845,6 +3777,71 @@ int FixRigidAbrade::rendezvous_body(int n, char *inbuf, int &rflag, int *&procli
 }
 
 /* ----------------------------------------------------------------------
+  Pushing atoms outwards from their COM following a read in from a restart 
+  so that they can be correctly setup in setup_bodies_static()
+------------------------------------------------------------------------- */
+
+void FixRigidAbrade::pre_setup_bodies_static() {
+
+  double **x = atom->x;
+  double *radius = atom->radius;
+  double len_i;
+  double dx[3];
+  
+  // Communicate bodies so their image flags can be set
+  nghost_body = 0;
+  commflag = FULL_BODY;
+  comm->forward_comm(this);
+  reset_atom2body();
+  
+  // marking all bodies as having abraded so required information is communicated
+  for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) 
+    body[ibody].abraded_flag = 1;
+  
+  // set body xcmimage flags = true image flags
+  imageint *image = atom->image;
+  for (int i = 0; i < atom->nlocal; i++)
+    if (bodytag[i] >= 0)
+      xcmimage[i] = image[i];
+    else
+      xcmimage[i] = 0;
+
+// Cycling through the local atoms and storing their unwrapped coordinates.
+for (int i = 0; i < atom->nlocal; i++) {
+  if (atom2body[i] < 0) continue;
+  domain->unmap(x[i], xcmimage[i], unwrap[i]);  
+}
+
+// communicate unwrapped position of owned atoms to ghost atoms
+commflag = UNWRAP;
+comm->forward_comm(this, 3);
+  
+// offsetting atoms about their body's owning atom which is placed at the COM
+  for (int i = 0; i < atom->nlocal; i++) {
+    
+    // passing over atoms which own bodies since their position does not need to be offset
+    if (bodytag[i] == atom->tag[i]) continue;
+    if (atom2body[i] < 0) continue;
+  
+    dx[0] = unwrap[i][0] - unwrap[atom->map(bodytag[i])][0];
+    dx[1] = unwrap[i][1] - unwrap[atom->map(bodytag[i])][1];
+    dx[2] = unwrap[i][2] - unwrap[atom->map(bodytag[i])][2];
+
+    // offsetting atoms outwards towards the COM by the atoms radius  
+    len_i = MathExtra::len3(dx);
+
+    x[i][0] += radius[i] * (dx[0]/len_i);
+    x[i][1] += radius[i] * (dx[1]/len_i);
+    x[i][2] += radius[i] * (dx[2]/len_i);
+  }
+
+// Mapping atom positions back to the simulation cell ready for setup_bodies_static()
+for (int i = 0; i < (atom->nlocal); i++)
+  domain->remap(atom->x[i], atom->image[i]);
+
+}
+
+/* ----------------------------------------------------------------------
    one-time initialization of rigid body attributes
    sets extended flags, masstotal, center-of-mass
    sets Cartesian and diagonalized inertia tensor
@@ -3974,6 +3971,7 @@ void FixRigidAbrade::setup_bodies_static()
   reset_atom2body();
 
   // compute mass & center-of-mass of each rigid body
+
 
   double **x = atom->x;
 
