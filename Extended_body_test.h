@@ -110,12 +110,11 @@ private:
   int debug_remesh_once = 0;
   int proc_remesh_flag = 0;
   int global_remesh_flag = 0;
-  int remesh_rebuild_flag = 0;
+  int rebuild_flag = 0;
 
 
   bigint lastcheck;
   int equalise_surface_flag = 0;
-  int restart_setup_flag = 0;
   
   void equalise_surface();
 
