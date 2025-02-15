@@ -786,6 +786,8 @@ void FixRigidAbrade::setup_pre_neighbor()
 
   if (reinitflag || !setupflag) {
 
+    std::cout << me << FRED(": setup_pre_neighbor()") << std::endl;
+
     // building topology for use in setup_bodies_static()
     neighbor->build_topology();
 
@@ -827,13 +829,31 @@ void FixRigidAbrade::setup_pre_neighbor()
     for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].offset_flag = 1;
     offset_vertices_inwards();
     for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].offset_flag = 0;
-  
+
+
+  std::cout << me << FGRN(": setup_pre_neighbor()") << std::endl;
+
+    if (update->ntimestep > 0){
+      
+      // // Getting a list of fixes so their pre_neighbor() and post_neighbor() functions can also be called
+      std::vector<Fix *> fix_list = modify->get_fix_list();
+
+      // rebuilding neighbor lists
+      for (auto &fix_i : fix_list) fix_i->pre_exchange();
+      domain->pbc();
+      domain->reset_box();
+      comm->setup();
+      neighbor->setup_bins();
+      comm->exchange();
+      comm->borders();
+      for (auto &fix_i : fix_list) fix_i->pre_neighbor();}
   }
 }
 
 void FixRigidAbrade::setup_post_neighbor()
 {
 
+  std::cout << me << FRED(": setup_post_neighbor()") << std::endl;
   if ((reinitflag || !setupflag)) {
 
     for (int ibody; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].abraded_flag = 0;
@@ -843,8 +863,9 @@ void FixRigidAbrade::setup_post_neighbor()
 
   }
 
-
   setupflag = 1;
+
+  std::cout << me << FGRN(": setup_post_neighbor()") << std::endl;
 }
 
 /* ----------------------------------------------------------------------
@@ -854,6 +875,8 @@ void FixRigidAbrade::setup_post_neighbor()
 
 void FixRigidAbrade::setup(int vflag)
 {
+
+  std::cout << me << FRED(": setup()") << std::endl;
   int i, n, ibody;
 
   // error if maxextent > comm->cutghost
@@ -942,13 +965,17 @@ void FixRigidAbrade::setup(int vflag)
     for (i = 0; i < nlocal; i++)
       for (n = 0; n < 6; n++) vatom[i][n] *= 2.0;
   }
+
+
+  std::cout << me << FGRN(": setup()") << std::endl;
 }
 
 /* ---------------------------------------------------------------------- */
 
 void FixRigidAbrade::initial_integrate(int vflag)
 {
-  offset_vertices_inwards();
+  std::cout << me << FRED(":initial_integrate()") << std::endl;
+  // offset_vertices_inwards();
 
   double dtfm;
 
@@ -997,6 +1024,7 @@ void FixRigidAbrade::initial_integrate(int vflag)
   // set coords/orient and velocity/rotation of atoms in rigid bodies
 
   set_xv();
+  std::cout << me << FGRN(":initial_integrate()") << std::endl;
 }
 
 /* ----------------------------------------------------------------------
@@ -2989,14 +3017,14 @@ void FixRigidAbrade::final_integrate()
   // setting all abraded_flags for owned and ghost bodies back to 0 in preparation for the following timestep
   for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].abraded_flag = 0;
 
-  // printing body vcm and acm
-  for (int ibody = 0; ibody < (nlocal_body); ibody++) {
-    std::cout << "proc: " << me << FGRN(", Initial dynamics: ") << " " << FGRN("local_body: ")
-              << atom->tag[body[ibody].ilocal] << " vcm: (" << body[ibody].vcm[0] << ", " << body[ibody].vcm[1] << ", "
-              << body[ibody].vcm[2] << ")   acm (" << body[ibody].angmom[0] << ", " << body[ibody].angmom[1] << ", " << body[ibody].angmom[2]
-              << ") xcm = " << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", "
-              << body[ibody].xcm[2] << ", density = " << body[ibody].density << std::endl;
-  }
+  // // printing body vcm and acm
+  // for (int ibody = 0; ibody < (nlocal_body); ibody++) {
+  //   std::cout << "proc: " << me << FGRN(", Initial dynamics: ") << " " << FGRN("local_body: ")
+  //             << atom->tag[body[ibody].ilocal] << " vcm: (" << body[ibody].vcm[0] << ", " << body[ibody].vcm[1] << ", "
+  //             << body[ibody].vcm[2] << ")   acm (" << body[ibody].angmom[0] << ", " << body[ibody].angmom[1] << ", " << body[ibody].angmom[2]
+  //             << ") xcm = " << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", "
+  //             << body[ibody].xcm[2] << ", density = " << body[ibody].density << std::endl;
+  // }
 
 }
 
@@ -3005,6 +3033,8 @@ void FixRigidAbrade::final_integrate()
 void FixRigidAbrade::end_of_step()
 {
 
+
+  std::cout << me << FRED(": end_of_step()") << std::endl;
 
   // if remeshing has been processed on the current timestep we rebuild the neighbor list and formally remove dlist atoms
   if (remesh_rebuild_flag) {
@@ -3125,7 +3155,7 @@ void FixRigidAbrade::end_of_step()
     restart_file = 1;
   }
 
-
+  std::cout << me << FGRN(": end_of_step()") << std::endl;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -3175,7 +3205,7 @@ void FixRigidAbrade::final_integrate_respa(int ilevel, int /*iloop*/)
 
 void FixRigidAbrade::pre_neighbor()
 {
-
+  std::cout << me << FRED(": pre_neighbor()") << std::endl;
   // std::cout << " -------- Calling pre_neighbor() t = " << update->ntimestep << " ------------" << std::endl;
   for (int ibody = 0; ibody < nlocal_body; ibody++) {
     Body *b = &body[ibody];
@@ -3189,6 +3219,7 @@ void FixRigidAbrade::pre_neighbor()
   //check(4);
 
   image_shift();
+  std::cout << me << FGRN(": pre_neighbor()") << std::endl;
 }
 
 /* ----------------------------------------------------------------------
@@ -3835,10 +3866,53 @@ comm->forward_comm(this, 3);
     x[i][2] += radius[i] * (dx[2]/len_i);
   }
 
+  int nlocal = atom->nlocal;
+
 // Mapping atom positions back to the simulation cell ready for setup_bodies_static()
 for (int i = 0; i < (atom->nlocal); i++)
   domain->remap(atom->x[i], atom->image[i]);
 
+
+    neighbor->build_topology();
+
+    // reset atom->map if it exists
+    // set nghost to 0 so old ghosts of deleted atoms won't be mapped
+    if (atom->map_style != Atom::MAP_NONE) {
+      atom->nghost = 0;
+      atom->map_init();
+      atom->map_set();
+    }
+
+    // Getting a list of fixes so their pre_neighbor() and post_neighbor() functions can also be called
+    std::vector<Fix *> fix_list = modify->get_fix_list();
+
+    // rebuilding neighbor lists
+    for (auto &fix_i : fix_list) fix_i->pre_exchange();
+    domain->pbc();
+    domain->reset_box();
+    comm->setup();
+    neighbor->setup_bins();
+    comm->exchange();
+    comm->borders();
+    for (auto &fix_i : fix_list) fix_i->pre_neighbor();
+    neighbor->build(1);
+    for (auto &fix_i : fix_list) fix_i->post_neighbor();
+
+    neighbor->ago = 1;
+    
+    
+    // neighbor->build(1);
+    // for (auto &fix_i : fix_list) fix_i->post_neighbor();
+
+      
+    // Communicate bodies so their image flags can be set
+    nghost_body = 0;
+    commflag = FULL_BODY;
+    comm->forward_comm(this);
+    reset_atom2body();
+    
+    // pre_neighbor(); 
+    
 }
 
 /* ----------------------------------------------------------------------
@@ -4672,6 +4746,7 @@ void FixRigidAbrade::setup_bodies_static()
 
 void FixRigidAbrade::resetup_bodies_static()
 {
+  std::cout << me << FRED(": resetup_bodies_static()") << std::endl;
   int i, ibody;
   int nlocal = atom->nlocal;
 
@@ -5358,6 +5433,8 @@ void FixRigidAbrade::resetup_bodies_static()
               << " owning atom (" << atom->x[body[ibody].ilocal][0] << ", " << atom->x[body[ibody].ilocal][1] << ", " << atom->x[body[ibody].ilocal][2] << ") [" << displace[body[ibody].ilocal][0] << ", " << displace[body[ibody].ilocal][1] << ", " << displace[body[ibody].ilocal][2] << "]\n "
               <<  std::endl;
               }
+
+  std::cout << me << FGRN(": resetup_bodies_static()") << std::endl;
 }
 
 /* ----------------------------------------------------------------------
