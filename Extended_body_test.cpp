@@ -788,11 +788,11 @@ void FixRigidAbrade::setup_pre_neighbor()
 
     std::cout << me << FRED(": setup_pre_neighbor()") << std::endl;
 
-    // building topology for use in setup_bodies_static()
-    neighbor->build_topology();
-
     if (update->ntimestep > 0) 
       pre_setup_bodies_static();
+
+    // building topology for use in setup_bodies_static()
+    neighbor->build_topology();
 
     // calcualting initial mass, volume, and inertia of particles from their topology
     setup_bodies_static();
@@ -828,25 +828,16 @@ void FixRigidAbrade::setup_pre_neighbor()
 
     for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].offset_flag = 1;
     offset_vertices_inwards();
+    
     for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].offset_flag = 0;
 
-
-  std::cout << me << FGRN(": setup_pre_neighbor()") << std::endl;
-
-    if (update->ntimestep > 0){
-      
-      // // Getting a list of fixes so their pre_neighbor() and post_neighbor() functions can also be called
-      std::vector<Fix *> fix_list = modify->get_fix_list();
-
-      // rebuilding neighbor lists
-      for (auto &fix_i : fix_list) fix_i->pre_exchange();
-      domain->pbc();
-      domain->reset_box();
-      comm->setup();
-      neighbor->setup_bins();
-      comm->exchange();
-      comm->borders();
-      for (auto &fix_i : fix_list) fix_i->pre_neighbor();}
+    if (update->ntimestep > 0 && !setupflag) {
+        rebuild_flag = 1;
+        end_of_step();
+    }
+    
+    std::cout << me << FGRN(": setup_pre_neighbor()") << std::endl;
+  
   }
 }
 
@@ -1350,7 +1341,7 @@ void FixRigidAbrade::equalise_surface()
   MPI_Allreduce(&proc_remesh_flag, &global_remesh_flag, 1, MPI_INT, MPI_SUM, world);
 
   if (global_remesh_flag) {
-    remesh_rebuild_flag = 1;
+    rebuild_flag = 1;
     std::cout << me << FBLU(": dlist: ");
     for (int d = 0; d < dlist.size(); d++) std::cout << dlist[d] << "(" << body_dlist[d] << ") ";
     std::cout << std::endl;
@@ -1687,7 +1678,7 @@ void FixRigidAbrade::areas_and_normals()
     MPI_Allreduce(&proc_remesh_flag, &global_remesh_flag, 1, MPI_INT, MPI_SUM, world);
 
     if (global_remesh_flag) {
-      remesh_rebuild_flag = 1;
+      rebuild_flag = 1;
       std::cout << me << FBLU(": dlist: ");
       for (int d = 0; d < dlist.size(); d++) std::cout << dlist[d] << "(" << body_dlist[d] << ") ";
       std::cout << std::endl;
@@ -2081,7 +2072,7 @@ void FixRigidAbrade::offset_vertices_inwards(){
 
   commflag = DISPLACE;
   comm->forward_comm(this, 3);
-
+  
 }
 
 /* ----------------------------------------------------------------------
@@ -3037,7 +3028,7 @@ void FixRigidAbrade::end_of_step()
   std::cout << me << FRED(": end_of_step()") << std::endl;
 
   // if remeshing has been processed on the current timestep we rebuild the neighbor list and formally remove dlist atoms
-  if (remesh_rebuild_flag) {
+  if (rebuild_flag) {
 
     // decrement atom->nangles by global number of angle change
     int all;
@@ -3111,7 +3102,7 @@ void FixRigidAbrade::end_of_step()
 
     proc_remesh_flag = 0;
     global_remesh_flag = 0;
-    remesh_rebuild_flag = 0;
+    rebuild_flag = 0;
 
     remesh_angle_proc_difference = 0;
     remesh_overflow_threshold = 0;
@@ -3868,51 +3859,10 @@ comm->forward_comm(this, 3);
 
   int nlocal = atom->nlocal;
 
-// Mapping atom positions back to the simulation cell ready for setup_bodies_static()
-for (int i = 0; i < (atom->nlocal); i++)
-  domain->remap(atom->x[i], atom->image[i]);
-
-
-    neighbor->build_topology();
-
-    // reset atom->map if it exists
-    // set nghost to 0 so old ghosts of deleted atoms won't be mapped
-    if (atom->map_style != Atom::MAP_NONE) {
-      atom->nghost = 0;
-      atom->map_init();
-      atom->map_set();
-    }
-
-    // Getting a list of fixes so their pre_neighbor() and post_neighbor() functions can also be called
-    std::vector<Fix *> fix_list = modify->get_fix_list();
-
-    // rebuilding neighbor lists
-    for (auto &fix_i : fix_list) fix_i->pre_exchange();
-    domain->pbc();
-    domain->reset_box();
-    comm->setup();
-    neighbor->setup_bins();
-    comm->exchange();
-    comm->borders();
-    for (auto &fix_i : fix_list) fix_i->pre_neighbor();
-    neighbor->build(1);
-    for (auto &fix_i : fix_list) fix_i->post_neighbor();
-
-    neighbor->ago = 1;
-    
-    
-    // neighbor->build(1);
-    // for (auto &fix_i : fix_list) fix_i->post_neighbor();
-
-      
-    // Communicate bodies so their image flags can be set
-    nghost_body = 0;
-    commflag = FULL_BODY;
-    comm->forward_comm(this);
-    reset_atom2body();
-    
-    // pre_neighbor(); 
-    
+  // Mapping atom positions back to the simulation cell ready for setup_bodies_static()
+  for (int i = 0; i < (atom->nlocal); i++)
+    domain->remap(atom->x[i], atom->image[i]);
+        
 }
 
 /* ----------------------------------------------------------------------
