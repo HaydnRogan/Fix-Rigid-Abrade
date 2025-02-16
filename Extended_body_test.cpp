@@ -127,10 +127,8 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
 
   restart_peratom = 1;    //~ Per-atom information is saved to the restart file
   peratom_flag = 1;
-  size_peratom_cols =
-      9;    //~ normal x/y/z, area and displacement speed x/y/z, cumulative displacement, Wear Energy, Duration of elastic interaction preceeding deformation, intial timestep of current elastic interaction, elastic interaction flag, plastic interaction flag
-  peratom_freq =
-      1;    // every step, **TODO change to user input utils::inumeric(FLERR,arg[5],false,lmp);
+  size_peratom_cols = 8;    //~ normal x/y/z, area and displacement speed x/y/z, cumulative displacement, Wear Energy
+  peratom_freq = 1;    // every step, **TODO change to user input utils::inumeric(FLERR,arg[5],false,lmp);
   create_attribute = 1;    //fix stores attributes that need setting when a new atom is created
 
   MPI_Comm_rank(world, &me);
@@ -158,10 +156,8 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
   for (int i = 0; i < (atom->nlocal + atom->nghost); i++) {
     vertexdata[i][0] = vertexdata[i][1] = vertexdata[i][2] = 0.0;    // normals (x,y,z)
     vertexdata[i][3] = 0.0;                                          // associated area
-    vertexdata[i][4] = vertexdata[i][5] = vertexdata[i][6] =
-        0.0;                   // displacement velocity (x,y,z) (ONLY ACCESSED BY LOCAL ATOMS)
-    vertexdata[i][7] = 0.0;    // (ONLY ACCESSED BY LOCAL ATOMS)
-    vertexdata[i][8] = 0.0;    // Cumulative Wear Energy (ONLY ACCESSED BY LOCAL ATOMS)
+    vertexdata[i][4] = vertexdata[i][5] = vertexdata[i][6] = 0.0;    // displacement velocity (x,y,z) (only accessed by locally stored atoms)
+    vertexdata[i][7] = 0.0;    // Cumulative displacement (only acessed by locally stored atoms)
   }
 
   // parse args for rigid body specification
@@ -819,7 +815,7 @@ void FixRigidAbrade::setup_pre_neighbor()
   // Equalising surface
   if (initial_remesh_flag) equalise_surface();
 
-  if ((reinitflag || !setupflag) && !inpfile) {
+  if ((reinitflag || !setupflag)) {
 
     if (remesh_flag) memory->destroy(equalise_surface_array);
 
@@ -834,8 +830,11 @@ void FixRigidAbrade::setup_pre_neighbor()
     if (update->ntimestep > 0 && !setupflag) {
         rebuild_flag = 1;
         end_of_step();
+        
+        if (inpfile) 
+          readfile();
     }
-    
+
     std::cout << me << FGRN(": setup_pre_neighbor()") << std::endl;
   
   }
@@ -1254,7 +1253,7 @@ void FixRigidAbrade::post_force(int /*vflag*/)
         }
       }
     }
-  }
+  }  
 }
 
 /* ----------------------------------------------------------------------
@@ -1787,8 +1786,11 @@ void FixRigidAbrade::displacement_of_atom(int i, double impacting_radius, double
   double total_normal_displacement;
   total_normal_displacement = (indentation * deltah) - (scratching * hl * dsh);
 
-  // Calculting the cumulative work done to displace the atom
-  vertexdata[i][8] += fabs(fnorm) * fabs(total_normal_displacement);
+  // // Calculating the cumulative work done to displace the atom
+  // vertexdata[i][8] += fabs(fnorm) * fabs(total_normal_displacement);
+
+  // Summing to the owning body (which maybe stored as a ghost)
+  body[atom2body[i]].wear_energy += fabs(fnorm) * fabs(total_normal_displacement);
 
   // Calculate the total displacement speed in global coordinates
   double displacement_speed;
@@ -2917,13 +2919,11 @@ void FixRigidAbrade::final_integrate()
     global_displace_vel[1] = vertexdata[i][5];
     global_displace_vel[2] = vertexdata[i][6];
 
-
     if (!MathExtra::len3(global_displace_vel)) continue;
 
     // Flagging that the body owning atom i has been abraded and has changed shape
     Body *b = &body[atom2body[i]];
     b->abraded_flag = 1;
-
 
     // NOTE: If storing normals in global coordinates, the normals must always be recalculated to reflect the updated positions of atoms
     // If we are storing in body coordinates they only need updating following an abrasion
@@ -2982,6 +2982,17 @@ void FixRigidAbrade::final_integrate()
   commflag = ABRADED_FLAG;
   comm->forward_comm(this, 1);
 
+  // TODO: Check that hese calculations and the subsequent communication is correct
+  // reverse comm cumulative wear energy from ghost bodies and reset for the following timestep
+  commflag = WEAR_ENERGY;
+  comm->reverse_comm(this, 1);
+
+  
+  // clear for ghost bodies so that they are not doubly counted on the following timesteps
+  for (int ibody = nlocal_body; ibody < (nlocal_body + nghost_body); ibody++) {
+    body[ibody].wear_energy = 0.0;
+  }
+
   offset_vertices_outwards();
 
   // recalculate properties and normals for each abraded body
@@ -3004,18 +3015,10 @@ void FixRigidAbrade::final_integrate()
     vertexdata[i][5] = 0.0;
     vertexdata[i][6] = 0.0;
   }
-
+  
   // setting all abraded_flags for owned and ghost bodies back to 0 in preparation for the following timestep
   for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].abraded_flag = 0;
 
-  // // printing body vcm and acm
-  // for (int ibody = 0; ibody < (nlocal_body); ibody++) {
-  //   std::cout << "proc: " << me << FGRN(", Initial dynamics: ") << " " << FGRN("local_body: ")
-  //             << atom->tag[body[ibody].ilocal] << " vcm: (" << body[ibody].vcm[0] << ", " << body[ibody].vcm[1] << ", "
-  //             << body[ibody].vcm[2] << ")   acm (" << body[ibody].angmom[0] << ", " << body[ibody].angmom[1] << ", " << body[ibody].angmom[2]
-  //             << ") xcm = " << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", "
-  //             << body[ibody].xcm[2] << ", density = " << body[ibody].density << std::endl;
-  // }
 
 }
 
@@ -3124,12 +3127,10 @@ void FixRigidAbrade::end_of_step()
     areas_and_normals();
     offset_vertices_inwards();
 
-    // all other vertexdata[i][>3] are only accessed for ghost atoms. reset them here just as a precaution
+    // all other vertexdata[i][>3] are only accessed for ghost atoms. Reset them here just as a precaution
     for (int i = nlocal; i < (atom->nlocal + atom->nghost); i++) {
-      vertexdata[i][4] = vertexdata[i][5] = vertexdata[i][6] =
-          0.0;                   // displacement velocity (x,y,z)
+      vertexdata[i][4] = vertexdata[i][5] = vertexdata[i][6] = 0.0;                   // displacement velocity (x,y,z)
       vertexdata[i][7] = 0.0;    // cumulative displacement
-      vertexdata[i][8] = 0.0;    // Cumulative Wear Energy
     }
   }
 
@@ -4010,6 +4011,7 @@ void FixRigidAbrade::setup_bodies_static()
     xgc[0] = xgc[1] = xgc[2] = 0.0;
     body[ibody].mass = 0.0;
     body[ibody].volume = 0.0;
+    body[ibody].wear_energy = 0.0;
     body[ibody].surface_area = 0.0;
     body[ibody].surface_density_threshold = 0.0;
     body[ibody].min_area_atom = 0.0;
@@ -4179,16 +4181,16 @@ void FixRigidAbrade::setup_bodies_static()
   // inbody[i] = 0/1 if Ith rigid body is initialized by file
 
   int *inbody;
-  if (inpfile) {
-    // must call it here so it doesn't override read in data but
-    // initialize bodies whose dynamic settings not set in inpfile
+  // if (inpfile) {
+  //   // must call it here so it doesn't override read in data but
+  //   // initialize bodies whose dynamic settings not set in inpfile
 
-    setup_bodies_dynamic();
+  //   setup_bodies_dynamic();
 
-    memory->create(inbody, nlocal_body, "rigid/abrade:inbody");
-    for (ibody = 0; ibody < nlocal_body; ibody++) inbody[ibody] = 0;
-    readfile(0, nullptr, inbody);
-  }
+  //   memory->create(inbody, nlocal_body, "rigid/abrade:inbody");
+  //   for (ibody = 0; ibody < nlocal_body; ibody++) inbody[ibody] = 0;
+  //   readfile(0, nullptr, inbody);
+  // }
 
   // remap the xcm of each body back into simulation box
   //   and reset body and atom xcmimage flags via pre_neighbor()
@@ -4320,9 +4322,9 @@ void FixRigidAbrade::setup_bodies_static()
   commflag = ITENSOR;
   comm->reverse_comm(this, 6);
 
-  // overwrite Cartesian inertia tensor with file values
+  // // overwrite Cartesian inertia tensor with file values
 
-  if (inpfile) readfile(1, itensor, inbody);
+  // if (inpfile) readfile(1, itensor, inbody);
 
   // diagonalize inertia tensor for each body via Jacobi rotations
   // inertia = 3 eigenvalues = principal moments of inertia
@@ -4653,7 +4655,7 @@ void FixRigidAbrade::setup_bodies_static()
 
     double norm;
     for (ibody = 0; ibody < nlocal_body; ibody++) {
-      if (inpfile && inbody[ibody]) continue;
+      // if (inpfile && inbody[ibody]) continue;
       inertia = body[ibody].inertia;
 
       if (inertia[0] == 0.0) {
@@ -4687,7 +4689,7 @@ void FixRigidAbrade::setup_bodies_static()
   // clean up
 
   memory->destroy(itensor);
-  if (inpfile) memory->destroy(inbody);
+  // if (inpfile) memory->destroy(inbody);
 }
 
 /* ----------------------------------------------------------------------
@@ -5648,22 +5650,24 @@ void FixRigidAbrade::setup_bodies_dynamic()
    where rigid-ID = mol-ID for fix rigid/abrade
 ------------------------------------------------------------------------- */
 
-void FixRigidAbrade::readfile(int which, double **array, int *inbody)
+void FixRigidAbrade::readfile()
 {
   int nchunk, eofflag, nlines, xbox, ybox, zbox;
   FILE *fp;
   char *eof, *start, *next, *buf;
   char line[MAXLINE];
+  double temp;
 
   // create local hash with key/value pairs
   // key = mol ID of bodies my atoms own
   // value = index into local body array
 
   int nlocal = atom->nlocal;
+  int local_id = 0;
 
-  std::map<tagint, int> hash;
-  for (int i = 0; i < nlocal; i++)
-    if (bodyown[i] >= 0) hash[atom->molecule[i]] = bodyown[i];
+  // std::map<tagint, int> hash;
+  // for (int i = 0; i < nlocal; i++)
+  //   hash[atom->tag[i]] = atom->tag[i];
 
   // open file and read header
 
@@ -5678,12 +5682,15 @@ void FixRigidAbrade::readfile(int which, double **array, int *inbody)
       if (*start != '\0' && *start != '#') break;
     }
     nlines = utils::inumeric(FLERR, utils::trim(line), true, lmp);
-    if (which == 0)
-      utils::logmesg(lmp, "Reading rigid body data for {} bodies from file {}\n", nlines, inpfile);
+
+    utils::logmesg(lmp, "Reading data for {} atoms from file {}\n", atom->natoms, inpfile);
     if (nlines == 0) fclose(fp);
+  std::cout << "me lines = " << nlines << std::endl;
   }
+
   MPI_Bcast(&nlines, 1, MPI_INT, 0, world);
 
+  std::cout << "lines = " << nlines << std::endl;
   // empty file with 0 lines is needed to trigger initial restart file
   // generation when no infile was previously used.
 
@@ -5705,15 +5712,10 @@ void FixRigidAbrade::readfile(int which, double **array, int *inbody)
     int nwords = utils::count_words(utils::trim_comment(buf));
     *next = '\n';
 
-    if (nwords != ATTRIBUTE_PERBODY)
-      error->all(FLERR, "Incorrect rigid body format in fix rigid/abrade file");
 
-    // loop over lines of rigid body attributes
+    // loop over lines of attributes
     // tokenize the line into values
-    // id = rigid body ID = mol-ID
-    // for which = 0, store all but inertia directly in body struct
-    // for which = 1, store inertia tensor array, invert 3,4,5 values to Voigt
-
+    std::cout << me << " looping over chunks " << std::endl;
     for (int i = 0; i < nchunk; i++) {
       next = strchr(buf, '\n');
       *next = '\0';
@@ -5721,52 +5723,23 @@ void FixRigidAbrade::readfile(int which, double **array, int *inbody)
       try {
         ValueTokenizer values(buf);
         tagint id = values.next_tagint();
+        double cumulative_displacement = values.next_double();
+        double wear_energy = values.next_double();
+       
+        // std::cout << "id: " << id << " W: " << cumulative_displacement << " E: " << wear_energy << std::endl;
 
-        if (id <= 0 || id > maxmol)
-          error->all(FLERR, "Invalid rigid body molecude ID {} in fix rigid/abrade file", id);
-
-        if (hash.find(id) == hash.end()) {
-          buf = next + 1;
-          continue;
+        // check if the restart atom is a locally stored atom
+        local_id = atom->map(id);
+        if (local_id >= 0 && local_id < atom->nlocal){
+          
+          // if so store its displacement so far
+          vertexdata[local_id][7] = cumulative_displacement;
+          
+          // if the atom owns a body also store the body's wear energy
+          if (bodytag[local_id] == id) 
+            body[atom2body[local_id]].wear_energy = wear_energy;
         }
-        int m = hash[id];
-        inbody[m] = 1;
 
-        if (which == 0) {
-          body[m].mass = values.next_double();
-          body[m].volume = values.next_double();
-
-          body[m].surface_area = values.next_double();
-          body[m].surface_density_threshold = values.next_double();
-          body[m].min_area_atom = values.next_double();
-          body[m].min_area_atom_tag = values.next_tagint();
-
-          body[m].density = values.next_double();
-          body[m].xcm[0] = values.next_double();
-          body[m].xcm[1] = values.next_double();
-          body[m].xcm[2] = values.next_double();
-          values.skip(6);
-          body[m].vcm[0] = values.next_double();
-          body[m].vcm[1] = values.next_double();
-          body[m].vcm[2] = values.next_double();
-          body[m].angmom[0] = values.next_double();
-          body[m].angmom[1] = values.next_double();
-          body[m].angmom[2] = values.next_double();
-          xbox = values.next_int();
-          ybox = values.next_int();
-          zbox = values.next_int();
-          body[m].image = ((imageint) (xbox + IMGMAX) & IMGMASK) |
-              (((imageint) (ybox + IMGMAX) & IMGMASK) << IMGBITS) |
-              (((imageint) (zbox + IMGMAX) & IMGMASK) << IMG2BITS);
-        } else {
-          values.skip(4);
-          array[m][0] = values.next_double();
-          array[m][1] = values.next_double();
-          array[m][2] = values.next_double();
-          array[m][5] = values.next_double();
-          array[m][4] = values.next_double();
-          array[m][3] = values.next_double();
-        }
       } catch (TokenizerException &e) {
         error->all(FLERR, "Invalid fix rigid/abrade infile: {}", e.what());
       }
@@ -5790,123 +5763,91 @@ void FixRigidAbrade::write_restart_file(const char *file)
 
   std::cout << FCYN("CALLING WRITE_RESTART_FILE_()") << std::endl;
 
-  // FILE *fp;
+  FILE *fp;
   
-  // // do not write file if bodies have not yet been initialized
+  // do not write file if bodies have not yet been initialized
 
-  // if (!setupflag) return;
+  if (!setupflag) return;
 
-  // // proc 0 opens file and writes header
+  // proc 0 opens file and writes header
 
-  // if (me == 0) {
-  //   auto outfile = std::string(file) + ".rigid";
-  //   fp = fopen(outfile.c_str(), "w");
-  //   if (fp == nullptr)
-  //     error->one(FLERR, "Cannot open fix rigid restart file {}: {}", outfile, utils::getsyserror());
+  if (me == 0) {
+    auto outfile = std::string(file) + ".rigid";
+    fp = fopen(outfile.c_str(), "w");
+    if (fp == nullptr)
+      error->one(FLERR, "Cannot open fix rigid restart file {}: {}", outfile, utils::getsyserror());
 
-  //   fmt::print(fp,
-  //              "# fix rigid mass, COM, inertia tensor info for "
-  //              "{} bodies on timestep {}\n\n",
-  //              nbody, update->ntimestep);
-  //   fmt::print(fp, "{}\n", nbody);
-  // }
+    fmt::print(fp,
+               "# fix rigid/abrade cumulative data for "
+               "{} atoms on timestep {}\n\n",
+               atom->natoms, update->ntimestep);
+    fmt::print(fp, "{}\n", atom->natoms);
+  }
 
-  // // communication buffer for all my rigid body info
-  // // max_size = largest buffer needed by any proc
-  // // ncol = # of values per line in output file
+  // communication buffer for all my info
+  // max_size = largest buffer needed by any proc
+  // ncol = # of values per line in output file
 
-  // int ncol = ATTRIBUTE_PERBODY + 2;
-  // int sendrow = nlocal_body;
-  // int maxrow;
-  // MPI_Allreduce(&sendrow, &maxrow, 1, MPI_INT, MPI_MAX, world);
+  int ncol = 3;
+  int sendrow = atom->nlocal;
+  int maxrow;
+  MPI_Allreduce(&sendrow, &maxrow, 1, MPI_INT, MPI_MAX, world);
 
-  // double **buf;
-  // if (me == 0)
-  //   memory->create(buf, MAX(1, maxrow), ncol, "rigid/abrade:buf");
-  // else
-  //   memory->create(buf, MAX(1, sendrow), ncol, "rigid/abrade:buf");
+  double **buf;
+  if (me == 0)
+    memory->create(buf, MAX(1, maxrow), ncol, "rigid/abrade:buf");
+  else
+    memory->create(buf, MAX(1, sendrow), ncol, "rigid/abrade:buf");
 
-  // // pack my rigid body info into buf
-  // // compute I tensor against xyz axes from diagonalized I and current quat
-  // // Ispace = P Idiag P_transpose
-  // // P is stored column-wise in exyz_space
+  // pack my cumulative data info into buf
 
-  // double p[3][3], pdiag[3][3], ispace[3][3];
+  for (int i = 0; i < atom->nlocal; i++) {
+    
+    buf[i][0] = atom->tag[i];
+    buf[i][1] = vertexdata[i][7]; // cumulative displacement
+    if (atom->tag[i] == bodytag[i])
+      buf[i][2] = body[atom2body[i]].wear_energy; // cumulative wear energy
+    else 
+      buf[i][2] = 0.0;  // stored as zero if not a body owning atom
+  }
 
-  // for (int i = 0; i < nlocal_body; i++) {
-  //   MathExtra::col2mat(body[i].ex_space, body[i].ey_space, body[i].ez_space, p);
-  //   MathExtra::times3_diag(p, body[i].inertia, pdiag);
-  //   MathExtra::times3_transpose(pdiag, p, ispace);
+  // write one chunk of rigid body info per proc to file
+  // proc 0 pings each proc, receives its chunk, writes to file
+  // all other procs wait for ping, send their chunk to proc 0
 
-  //   buf[i][0] = atom->molecule[body[i].ilocal];
-  //   buf[i][1] = body[i].mass;
-  //   buf[i][2] = body[i].volume;
+  int tmp, recvrow;
 
-  //   buf[i][3] = body[i].surface_area;
-  //   buf[i][4] = body[i].surface_density_threshold;
-  //   buf[i][5] = body[i].min_area_atom;
-  //   buf[i][6] = body[i].min_area_atom_tag;
+  if (me == 0) {
+    MPI_Status status;
+    MPI_Request request;
+    for (int iproc = 0; iproc < nprocs; iproc++) {
+      if (iproc) {
+        MPI_Irecv(&buf[0][0], maxrow * ncol, MPI_DOUBLE, iproc, 0, world, &request);
+        MPI_Send(&tmp, 0, MPI_INT, iproc, 0, world);
+        MPI_Wait(&request, &status);
+        MPI_Get_count(&status, MPI_DOUBLE, &recvrow);
+        recvrow /= ncol;
+      } else
+        recvrow = sendrow;
 
-  //   buf[i][7] = body[i].density;
-  //   buf[i][8] = body[i].xcm[0];
-  //   buf[i][9] = body[i].xcm[1];
-  //   buf[i][10] = body[i].xcm[2];
-  //   buf[i][11] = ispace[0][0];
-  //   buf[i][12] = ispace[1][1];
-  //   buf[i][13] = ispace[2][2];
-  //   buf[i][14] = ispace[0][1];
-  //   buf[i][15] = ispace[0][2];
-  //   buf[i][16] = ispace[1][2];
-  //   buf[i][17] = body[i].vcm[0];
-  //   buf[i][18] = body[i].vcm[1];
-  //   buf[i][19] = body[i].vcm[2];
-  //   buf[i][20] = body[i].angmom[0];
-  //   buf[i][21] = body[i].angmom[1];
-  //   buf[i][22] = body[i].angmom[2];
-  //   buf[i][23] = (body[i].image & IMGMASK) - IMGMAX;
-  //   buf[i][24] = (body[i].image >> IMGBITS & IMGMASK) - IMGMAX;
-  //   buf[i][25] = (body[i].image >> IMG2BITS) - IMGMAX;
-  // }
+      for (int i = 0; i < recvrow; i++){
+        fprintf(fp,
+                "%d %-1.16e %-1.16e\n",
+                static_cast<tagint>(buf[i][0]), buf[i][1], buf[i][2]);
+                        printf(
+                "%d %-1.16e %-1.16e\n",
+                static_cast<tagint>(buf[i][0]), buf[i][1], buf[i][2]);
+                }
+    }
 
-  // // write one chunk of rigid body info per proc to file
-  // // proc 0 pings each proc, receives its chunk, writes to file
-  // // all other procs wait for ping, send their chunk to proc 0
+  } else {
+    MPI_Recv(&tmp, 0, MPI_INT, 0, 0, world, MPI_STATUS_IGNORE);
+    MPI_Rsend(&buf[0][0], sendrow * ncol, MPI_DOUBLE, 0, 0, world);
+  }
 
-  // int tmp, recvrow;
-
-  // if (me == 0) {
-  //   MPI_Status status;
-  //   MPI_Request request;
-  //   for (int iproc = 0; iproc < nprocs; iproc++) {
-  //     if (iproc) {
-  //       MPI_Irecv(&buf[0][0], maxrow * ncol, MPI_DOUBLE, iproc, 0, world, &request);
-  //       MPI_Send(&tmp, 0, MPI_INT, iproc, 0, world);
-  //       MPI_Wait(&request, &status);
-  //       MPI_Get_count(&status, MPI_DOUBLE, &recvrow);
-  //       recvrow /= ncol;
-  //     } else
-  //       recvrow = sendrow;
-
-  //     for (int i = 0; i < recvrow; i++)
-  //       fprintf(fp,
-  //               "%d %-1.16e %-1.16e %-1.16e %-1.16e "
-  //               "%-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e "
-  //               "%-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %d %d %d\n",
-  //               static_cast<int>(buf[i][0]), buf[i][1], buf[i][2], buf[i][3], buf[i][4], buf[i][5],
-  //               buf[i][6], buf[i][7], buf[i][8], buf[i][9], buf[i][10], buf[i][11], buf[i][12],
-  //               buf[i][13], buf[i][14], buf[i][15], buf[i][16], static_cast<int>(buf[i][17]),
-  //               static_cast<int>(buf[i][18]), static_cast<int>(buf[i][19]));
-  //   }
-
-  // } else {
-  //   MPI_Recv(&tmp, 0, MPI_INT, 0, 0, world, MPI_STATUS_IGNORE);
-  //   MPI_Rsend(&buf[0][0], sendrow * ncol, MPI_DOUBLE, 0, 0, world);
-  // }
-
-  // // clean up and close file
-
-  // memory->destroy(buf);
-  // if (me == 0) fclose(fp);
+  // clean up and close file
+  memory->destroy(buf);
+  if (me == 0) fclose(fp);
 }
 
 /* ----------------------------------------------------------------------
@@ -6018,7 +5959,6 @@ void FixRigidAbrade::set_arrays(int i)
   vertexdata[i][5] = 0.0;
   vertexdata[i][6] = 0.0;
   vertexdata[i][7] = 0.0;
-  vertexdata[i][8] = 0.0;
 
   // must also zero vatom if per-atom virial calculated on this timestep
   // since vatom is calculated before and after atom migration
@@ -6709,7 +6649,18 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
       buf[m++] = static_cast<double>(body[bodyown[i]].natoms);
     }
 
-  } else if (commflag == MIN_AREA) {
+  } else if (commflag == WEAR_ENERGY) {
+    for (i = first; i < last; i++) {
+
+      // Only communicating properties relevant to bodies which have abraded and changed shape
+      if (bodyown[i] < 0) continue;
+      if (!body[bodyown[i]].abraded_flag) continue;
+
+      buf[m++] = body[bodyown[i]].wear_energy;
+
+    }
+
+  }else if (commflag == MIN_AREA) {
     for (i = first; i < last; i++) {
 
       // Only communicating properties relevant to bodies which have abraded and changed shape
@@ -6867,6 +6818,18 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
       body[bodyown[j]].mass += buf[m++];
       body[bodyown[j]].volume += buf[m++];
       body[bodyown[j]].natoms += static_cast<int>(buf[m++]);
+    }
+
+  } else if (commflag == WEAR_ENERGY) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+
+      // Only communicating properties relevant to bodies which have abraded and changed shape
+      if (bodyown[j] < 0) continue;
+      if (!body[bodyown[j]].abraded_flag) continue;
+      
+      body[bodyown[j]].wear_energy += buf[m++];
+
     }
 
   } else if (commflag == MIN_AREA) {
