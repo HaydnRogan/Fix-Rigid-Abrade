@@ -96,6 +96,7 @@ private:
   std::vector<int> dlist; // list of atom tags to be remeshed on a call of remesh()
   std::vector<int> body_dlist; // list of associated body tags to be remeshed. This is required since there maybe a case where a proc does not own the dlist atom and so would be unable to access body properties
   std::vector<int> total_dlist;
+  std::vector<int> total_body_dlist;
 
   // it is possible that these could be made into body properties. 
   std::vector<std::vector<tagint>> boundaries;
@@ -109,6 +110,7 @@ private:
   int remesh_angle_proc_difference = 0;
   int debug_remesh_once = 0;
   int proc_remesh_flag = 0;
+  int proc_abraded_flag = 0;
   int global_remesh_flag = 0;
   int rebuild_flag = 0;
 
@@ -125,7 +127,7 @@ private:
   int triclinic;
 
   // Modified Commflags
-  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM, ANGMOM, XCM, XCM_MASS, MIN_AREA, EQUALISE, EDGES, NEW_ANGLES, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG};
+  enum{FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM, ANGMOM, XCM, XCM_MASS, MIN_AREA, EQUALISE, EDGES, WEAR_ENERGY, NEW_ANGLES, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG};
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
@@ -156,6 +158,7 @@ private:
     double surface_density_threshold; // natoms/surface_area density calculated at setup to act as a condition for remeshing
     double min_area_atom; // the smallest area associated with an atom within the body
     tagint min_area_atom_tag; // tag of the atom in the body which has the smallest associated area
+    double wear_energy; // cumulative work done when displacing surface atoms in the body
 
     double density;        // mass density of the body
     double xcm[3];         // COM position
@@ -173,6 +176,7 @@ private:
     double omega[3];       // space-frame omega of body
     double conjqm[4];      // conjugate quaternion momentum
     int remapflag[4];      // PBC remap flags
+    
     int abraded_flag;     // flag which marks that the body has abraded and changed shape
     int offset_flag;    
     tagint remesh_atom;      // atom to be added to dlist on each call of remesh(), 0 if no atom to be added
@@ -281,7 +285,7 @@ private:
   void apply_langevin_thermostat();
   void compute_forces_and_torques();
   void enforce2d();
-  void readfile(int, double **, int *);
+  void readfile();
   void grow_body();
   void reset_atom2body();
 
