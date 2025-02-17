@@ -834,8 +834,21 @@ void FixRigidAbrade::setup_pre_neighbor()
     // to ensure stability when using restart files with bodies straddling periodic boundaries
 
     if (update->ntimestep > 0 && !setupflag) {
-        rebuild_flag = 1;
-        end_of_step();        
+        // Getting a list of fixes so their pre_neighbor() and post_neighbor() functions can also be called
+        std::vector<Fix *> fix_list = modify->get_fix_list();
+        // rebuilding neighbor lists
+        for (auto &fix_i : fix_list) fix_i->pre_exchange();
+        domain->pbc();
+        domain->reset_box();
+        comm->setup();
+        neighbor->setup_bins();
+        comm->exchange();
+        comm->borders();
+        for (auto &fix_i : fix_list) fix_i->pre_neighbor();
+        neighbor->build(1);
+        for (auto &fix_i : fix_list) fix_i->post_neighbor();
+
+        neighbor->ago = 0;
         
         // Optionally read in a fix specific restart file which preserves the displacement amount of 
         // each atom and the cumulative dissipated wear energy 
@@ -847,9 +860,8 @@ void FixRigidAbrade::setup_pre_neighbor()
 
 void FixRigidAbrade::setup_post_neighbor()
 {
-
+  
   if ((reinitflag || !setupflag)) {
-
     // Rebuilding neighbor list following equalise_surface() at the end of the timestep
     if (remesh_flag) end_of_step();
     
@@ -1433,7 +1445,7 @@ void FixRigidAbrade::areas_and_normals()
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
     } else {
-      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step();
+      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step()
       i1 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][0];
       i2 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][1];
       i3 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][2];
@@ -3169,6 +3181,10 @@ void FixRigidAbrade::end_of_step()
 
   if (update->ntimestep == output->next_restart)
     restart_file = 1;
+  
+  // if (me == 0)
+  // if (!(update->ntimestep%100) )
+  // std::cout << " t = " << update->ntimestep << std::endl;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -4650,14 +4666,14 @@ void FixRigidAbrade::setup_bodies_static()
   commflag = ITENSOR;
   comm->reverse_comm(this, 6);
 
-  //  for (int ibody = 0; ibody < nlocal_body; ibody++) {
-  //   std::cout << me << ": t = " << update->ntimestep << " PRECHECK Body " << atom->tag[body[ibody].ilocal] << " inertia: (" << body[ibody].inertia[0] << ", "
-  //             << body[ibody].inertia[1] << ", " << body[ibody].inertia[2] << ") Volume: " << body[ibody].volume
-  //             << " Mass: " << body[ibody].mass << " Density: " << body[ibody].density << " COM: ("
-  //             << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", " << body[ibody].xcm[2] << ") image " << body[ibody].image << "" 
-  //             << " owning atom (" << atom->x[body[ibody].ilocal][0] << ", " << atom->x[body[ibody].ilocal][1] << ", " << atom->x[body[ibody].ilocal][2] << ") [" << displace[body[ibody].ilocal][0] << ", " << displace[body[ibody].ilocal][1] << ", " << displace[body[ibody].ilocal][2] << "]\n "
-  //             <<  std::endl;
-  //             }
+   for (int ibody = 0; ibody < nlocal_body; ibody++) {
+    std::cout << me << ": t = " << update->ntimestep << " PRECHECK Body " << atom->tag[body[ibody].ilocal] << " inertia: (" << body[ibody].inertia[0] << ", "
+              << body[ibody].inertia[1] << ", " << body[ibody].inertia[2] << ") Volume: " << body[ibody].volume
+              << " Mass: " << body[ibody].mass << " Density: " << body[ibody].density << " COM: ("
+              << body[ibody].xcm[0] << ", " << body[ibody].xcm[1] << ", " << body[ibody].xcm[2] << ") image " << body[ibody].image << "" 
+              << " owning atom (" << atom->x[body[ibody].ilocal][0] << ", " << atom->x[body[ibody].ilocal][1] << ", " << atom->x[body[ibody].ilocal][2] << ") [" << displace[body[ibody].ilocal][0] << ", " << displace[body[ibody].ilocal][1] << ", " << displace[body[ibody].ilocal][2] << "]\n "
+              <<  std::endl;
+              }
 
   if (dynamic_flag) {    // error check that re-computed moments of inertia match diagonalized ones
     // do not do test for bodies with params read from inpfile
@@ -4796,7 +4812,7 @@ void FixRigidAbrade::resetup_bodies_static()
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
     } else {
-      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step();
+      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step()
       i1 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][0];
       i2 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][1];
       i3 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][2];
@@ -4916,7 +4932,7 @@ void FixRigidAbrade::resetup_bodies_static()
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
     } else {
-      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step();
+      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step()
       i1 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][0];
       i2 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][1];
       i3 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][2];
@@ -5186,7 +5202,7 @@ void FixRigidAbrade::resetup_bodies_static()
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
     } else {
-      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step();
+      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step()
       i1 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][0];
       i2 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][1];
       i3 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][2];
@@ -5454,7 +5470,7 @@ void FixRigidAbrade::setup_bodies_dynamic()
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
     } else {
-      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step();
+      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step()
       i1 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][0];
       i2 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][1];
       i3 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][2];
@@ -5530,7 +5546,7 @@ void FixRigidAbrade::setup_bodies_dynamic()
       i2 = anglelist[n][1];
       i3 = anglelist[n][2];
     } else {
-      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step();
+      // reading angles from the overflow list populated during remeshing. This will be cleared and angles properly added to neighbor->anglelist during end_of_step()
       i1 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][0];
       i2 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][1];
       i3 = overflow_anglelist[n - (nanglelist + remesh_overflow_threshold)][2];
