@@ -782,7 +782,8 @@ void FixRigidAbrade::setup_pre_neighbor()
 
   if (reinitflag || !setupflag) {
 
-    // if starting from a restart file then atoms need to be displaced outwards from their COM to allign with the icosohedra vertices
+    // if starting from a restart file then atoms need to be displaced 
+    // outwards from their COM to allign with the icosohedra vertices
     if (update->ntimestep > 0) 
       pre_setup_bodies_static();
 
@@ -813,7 +814,6 @@ void FixRigidAbrade::setup_pre_neighbor()
   else
     pre_neighbor();
 
-
   // Recursivelly equalising surface
   if (initial_remesh_flag) equalise_surface();
 
@@ -829,15 +829,16 @@ void FixRigidAbrade::setup_pre_neighbor()
     offset_vertices_inwards();
     for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].offset_flag = 0;
 
-
-    // If starting from a restart file neighbor information must be reset for atoms that have been pushed outside of the simulatoion cell prior to building lists 
-    // This is required to ensure stability when using restart files with bodies straddling periodic boundaries
+    // If starting from a restart file neighbor information must be reset for atoms that
+    // have been pushed outside of the simulatoion cell prior to building lists  is required 
+    // to ensure stability when using restart files with bodies straddling periodic boundaries
 
     if (update->ntimestep > 0 && !setupflag) {
         rebuild_flag = 1;
         end_of_step();        
         
-        // Optionally read in a fix specific restart file which preserves the displacement amount of each atom and the cumulative dissipated wear energy 
+        // Optionally read in a fix specific restart file which preserves the displacement amount of 
+        // each atom and the cumulative dissipated wear energy 
         if (inpfile) 
           readfile();
     }
@@ -3823,13 +3824,14 @@ int FixRigidAbrade::rendezvous_body(int n, char *inbuf, int &rflag, int *&procli
 ------------------------------------------------------------------------- */
 
 void FixRigidAbrade::pre_setup_bodies_static() {
-
+  
+  int nlocal = atom->nlocal;
   double **x = atom->x;
   double *radius = atom->radius;
   double len_i;
   double dx[3];
   
-  // Communicate bodies so their image flags can be set
+  // Communicate bodies so ghost bodies can be accessed
   nghost_body = 0;
   commflag = FULL_BODY;
   comm->forward_comm(this);
@@ -3839,19 +3841,11 @@ void FixRigidAbrade::pre_setup_bodies_static() {
   for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) 
     body[ibody].abraded_flag = 1;
   proc_abraded_flag = 1;
-  
-  // set body xcmimage flags = true image flags
-  imageint *image = atom->image;
-  for (int i = 0; i < atom->nlocal; i++)
-    if (bodytag[i] >= 0)
-      xcmimage[i] = image[i];
-    else
-      xcmimage[i] = 0;
 
 // Cycling through the local atoms and storing their unwrapped coordinates.
 for (int i = 0; i < atom->nlocal; i++) {
   if (atom2body[i] < 0) continue;
-  domain->unmap(x[i], xcmimage[i], unwrap[i]);  
+  domain->unmap(x[i], atom->image[i], unwrap[i]);  
 }
 
 // communicate unwrapped position of owned atoms to ghost atoms
@@ -3860,7 +3854,6 @@ comm->forward_comm(this, 3);
   
 // offsetting atoms about their body's owning atom which is placed at the COM
   for (int i = 0; i < atom->nlocal; i++) {
-    
     // passing over atoms which own bodies since their position does not need to be offset
     if (bodytag[i] == atom->tag[i]) continue;
     if (atom2body[i] < 0) continue;
@@ -3871,18 +3864,14 @@ comm->forward_comm(this, 3);
 
     // offsetting atoms outwards towards the COM by the atoms radius  
     len_i = MathExtra::len3(dx);
-
     x[i][0] += radius[i] * (dx[0]/len_i);
     x[i][1] += radius[i] * (dx[1]/len_i);
     x[i][2] += radius[i] * (dx[2]/len_i);
   }
 
-  int nlocal = atom->nlocal;
-
   // Mapping atom positions back to the simulation cell ready for setup_bodies_static()
   for (int i = 0; i < (atom->nlocal); i++)
-    domain->remap(atom->x[i], atom->image[i]);
-        
+    domain->remap(atom->x[i], atom->image[i]); 
 }
 
 /* ----------------------------------------------------------------------
@@ -4070,12 +4059,12 @@ void FixRigidAbrade::setup_bodies_static()
 //     std::cout << "t = " << update->ntimestep << ": atom " << atom->tag[i] << " x: (" << atom->x[i][0] << ", " << atom->x[i][1] << ", " << atom->x[i][2] << ") "<< " unwrap (" <<  unwrap[i][0] << ", " << unwrap[i][1] << ", " << unwrap[i][2] << ") image: " << atom->image[i] << " xcmimage: " << xcmimage[i] << "body xcm: (" << body[atom2body[i]].xcm[0] << ", " <<  body[atom2body[i]].xcm[1] << ", " <<  body[atom2body[i]].xcm[2] <<  ")" << std::endl; 
 
 
-  std::cout
-      << me
-      << FMAG(" [neighbor->nanglelist, remesh_overflow_threshold, overflow_anglelist.size()] = (")
-      << neighbor->nanglelist << FMAG(",") << remesh_overflow_threshold << FMAG(",")
-      << overflow_anglelist.size() << FMAG(") = ")
-      << neighbor->nanglelist + remesh_overflow_threshold + overflow_anglelist.size() << std::endl;
+  // std::cout
+  //     << me
+  //     << FMAG(" [neighbor->nanglelist, remesh_overflow_threshold, overflow_anglelist.size()] = (")
+  //     << neighbor->nanglelist << FMAG(",") << remesh_overflow_threshold << FMAG(",")
+  //     << overflow_anglelist.size() << FMAG(") = ")
+  //     << neighbor->nanglelist + remesh_overflow_threshold + overflow_anglelist.size() << std::endl;
 
   // Calculating body volume, mass and COM from constituent tetrahedra
   for (int n = 0; n < nanglelist; n++) {
@@ -5830,7 +5819,7 @@ void FixRigidAbrade::write_restart_file(const char *file)
       buf[i][2] = 0.0;  // stored as zero if not a body owning atom
   }
 
-  // write one chunk of rigid body info per proc to file
+  // write one chunk of info per proc to file
   // proc 0 pings each proc, receives its chunk, writes to file
   // all other procs wait for ping, send their chunk to proc 0
 
