@@ -3019,6 +3019,10 @@ void FixRigidAbrade::final_integrate()
     body[ibody].wear_energy = 0.0;
   }
 
+  MPI_Allreduce(&proc_abraded_flag, &global_abraded_flag, 1, MPI_INT, MPI_SUM, world);
+
+  if (global_abraded_flag){
+    // std::cout << "abrasion occuring" << std::endl;
   if (proc_abraded_flag)
     offset_vertices_outwards();
 
@@ -3046,7 +3050,8 @@ void FixRigidAbrade::final_integrate()
   
   // setting all abraded_flags for owned and ghost bodies back to 0 in preparation for the following timestep
   for (int ibody = 0; ibody < (nlocal_body + nghost_body); ibody++) body[ibody].abraded_flag = 0;
-
+}
+  global_abraded_flag = 0;
   proc_abraded_flag = 0;
 
 }
@@ -3153,6 +3158,7 @@ void FixRigidAbrade::end_of_step()
     total_dlist.clear();
     total_body_dlist.clear();
 
+    
     proc_remesh_flag = 0;
     global_remesh_flag = 0;
     rebuild_flag = 0;
@@ -3194,7 +3200,6 @@ void FixRigidAbrade::end_of_step()
   if (me == 0)
   if (!(update->ntimestep%50) )
   std::cout << " t = " << update->ntimestep << std::endl;
-
 }
 
 /* ---------------------------------------------------------------------- */
