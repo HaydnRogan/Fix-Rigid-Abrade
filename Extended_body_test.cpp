@@ -473,6 +473,12 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
                    "Illegal fix rigid/abrade command - remesh keyword must be declared before the "
                    "equalise keyword");
       initial_remesh_flag = 1;
+      
+      if (update->ntimestep > 0) {
+        if (me == 0) error->warning(FLERR, "Cannot equalise surface from restart file. Bodies will not be equalised.");
+        initial_remesh_flag = 0;
+      }
+
       iarg += 1;
     } else
       error->all(FLERR, "Illegal fix rigid/abrade command");
@@ -3050,6 +3056,7 @@ void FixRigidAbrade::final_integrate()
 void FixRigidAbrade::end_of_step()
 {
 
+
   // if remeshing has been processed on the current timestep we rebuild the neighbor list and formally remove dlist atoms
   if (rebuild_flag) {
 
@@ -3086,6 +3093,7 @@ void FixRigidAbrade::end_of_step()
     // resetting nlocal
     atom->nlocal = nlocal;
 
+    
     // reset atom->natoms and also topology counts
     bigint nblocal = atom->nlocal;
     MPI_Allreduce(&nblocal, &atom->natoms, 1, MPI_LMP_BIGINT, MPI_SUM, world);
@@ -3097,6 +3105,7 @@ void FixRigidAbrade::end_of_step()
       atom->map_init();
       atom->map_set();
     }
+
 
     // Getting a list of fixes so their pre_neighbor() and post_neighbor() functions can also be called
     std::vector<Fix *> fix_list = modify->get_fix_list();
@@ -3182,9 +3191,10 @@ void FixRigidAbrade::end_of_step()
   if (update->ntimestep == output->next_restart)
     restart_file = 1;
   
-  // if (me == 0)
-  // if (!(update->ntimestep%100) )
-  // std::cout << " t = " << update->ntimestep << std::endl;
+  if (me == 0)
+  if (!(update->ntimestep%50) )
+  std::cout << " t = " << update->ntimestep << std::endl;
+
 }
 
 /* ---------------------------------------------------------------------- */
