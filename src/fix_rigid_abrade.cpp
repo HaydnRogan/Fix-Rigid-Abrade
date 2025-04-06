@@ -127,7 +127,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
 
   restart_peratom = 1;    //~ Per-atom information is saved to the restart file
   peratom_flag = 1;
-  size_peratom_cols = 8;    //~ normal x/y/z, area and displacement speed x/y/z, cumulative displacement, Wear Energy
+  size_peratom_cols = 8;    //~ normal x/y/z, area and displacement speed x/y/z, cumulative displacement, (Wear Energy - temporarily removed)
   peratom_freq = 1;    // every step, **TODO change to user input utils::inumeric(FLERR,arg[5],false,lmp);
   create_attribute = 1;    //fix stores attributes that need setting when a new atom is created
 
@@ -158,6 +158,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
     vertexdata[i][3] = 0.0;                                          // associated area
     vertexdata[i][4] = vertexdata[i][5] = vertexdata[i][6] = 0.0;    // displacement velocity (x,y,z) (only accessed by locally stored atoms)
     vertexdata[i][7] = 0.0;    // Cumulative displacement (only acessed by locally stored atoms)
+    // vertexdata[i][8] = vertexdata[i][9] = vertexdata[i][10] = 0.0;   // normals stored in global coordinates
   }
 
   // parse args for rigid body specification
@@ -184,7 +185,7 @@ FixRigidAbrade::FixRigidAbrade(LAMMPS *lmp, int narg, char **arg) :
     mustr = utils::strdup(arg[4] + 2);
     mustyle = EQUAL;
   } else {
-    fric_coeff = utils::numeric(FLERR, arg[4], false, lmp);
+    hardness_ratio = utils::numeric(FLERR, arg[4], false, lmp);
     mustyle = CONSTANT;
   }
   if (utils::strmatch(arg[5], "^v_")) {
@@ -1147,7 +1148,7 @@ void FixRigidAbrade::post_force(int /*vflag*/)
   if (varflag != CONSTANT) {
     modify->clearstep_compute();
     if (hstyle == EQUAL) hardness = input->variable->compute_equal(hvar);
-    if (mustyle == EQUAL) fric_coeff = input->variable->compute_equal(muvar);
+    if (mustyle == EQUAL) hardness_ratio = input->variable->compute_equal(muvar);
     if (densitystyle == EQUAL) density = input->variable->compute_equal(densityvar);
     modify->addstep_compute(update->ntimestep + 1);
   }
@@ -1710,7 +1711,7 @@ void FixRigidAbrade::areas_and_normals()
 }
 
 /* ----------------------------------------------------------------------
-  Calaulte the dispalcement velocity of an abrading atom in the global
+  Calaulte the displacement velocity of an abrading atom in the global
   coordinate system
 ------------------------------------------------------------------------- */
 
@@ -1720,27 +1721,26 @@ void FixRigidAbrade::displacement_of_atom(int i, double impacting_radius, double
   double **f = atom->f;
   double **x = atom->x;
   double **v = atom->v;
-
-  double global_normals[3];
-  double f_tan[3];
-  double vnorm;
-  double v_norm[3];
-  double v_tan[3];
-  double deltah;
-  double deltas;
-  double htp;
-  double dsh;
-  double total_normal_displacement;
-  double displacement_speed;
-  double r_eff;
+  double dt = update->dt;
+  
+  double r_eff;  
   double bodynormals[3];
+  double global_normals[3];
   bool gap_is_shrinking;
   double associated_area;
-  double fnorm;
+  double f_norm_dot;
+  double f_norm[3];
+  double f_tan[3];
   bool indentation;
-  double ftan;
   bool scratching;
-  bool hl;
+  double v_norm_dot;
+  double v_norm[3];
+  double v_tan[3];
+  double norm_disp_vel[3];
+  double htp;
+  double tan_disp_vel_abs;
+  double tan_disp_vel[3];
+  
 
   // Calculating the effective radius of atom i and the impacting body (atom j or wall)
   r_eff = (atom->radius)[i] + impacting_radius;
@@ -1759,80 +1759,82 @@ void FixRigidAbrade::displacement_of_atom(int i, double impacting_radius, double
   // Checking if the normal and relative velocities are facing towards oneanother, indicating the gap between i and j is closing
   gap_is_shrinking = (MathExtra::dot3(v_rel, global_normals) < 0);
 
-  // If the atoms are moving away from one another then no abrasion occurs
+  // If the atoms are moving away from one another then no abrasion occurs (abrasion only occurs on the approach)
   if (!gap_is_shrinking) return;
 
   // Storing area associated with atom i (equal in both body and global coords)
   associated_area = vertexdata[i][3];
 
-  // Calculating the scalar product of force on atom i and the normal to i
-  fnorm = f[i][0] * global_normals[0] + f[i][1] * global_normals[1] + f[i][2] * global_normals[2];
+  // Calculating force acting along the surface atom's normal
+  f_norm_dot = f[i][0] * global_normals[0] + f[i][1] * global_normals[1] + f[i][2] * global_normals[2];
+  f_norm[0] = f_norm_dot * global_normals[0];
+  f_norm[1] = f_norm_dot * global_normals[1];
+  f_norm[2] = f_norm_dot * global_normals[2];
 
-  // Checking for indentation (is the normal force greater than the normal hardness * area associated with atom i)
-  indentation = abs(fnorm) > abs(hardness * associated_area);
+  // Calculating force acting tangentia; the surface atoms normal
+  f_tan[0] = f[i][0] - f_norm[0];
+  f_tan[1] = f[i][1] - f_norm[1];
+  f_tan[2] = f[i][2] - f_norm[2];
 
-  // Calculating the components of force on i tangential to i
-  f_tan[0] = f[i][0] - fnorm * global_normals[0];
-  f_tan[1] = f[i][1] - fnorm * global_normals[1];
-  f_tan[2] = f[i][2] - fnorm * global_normals[2];
+  // Comparing normal stress against hardness to determine if indentation is occuring
+  indentation = (MathExtra::len3(f_norm) / associated_area) > hardness;
 
-  // Calculating magnitude of force tangential to i
-  ftan = MathExtra::len3(f_tan);
+  // Comparing shear stress against hardness to determine if scratching is occuring
+  scratching = (MathExtra::len3(f_tan) / associated_area) > (hardness*hardness_ratio);
 
-  // Checking for scratching (is the tangential force greater than the tangential hardness * area associated with atom i)
-  scratching = abs(ftan) > abs(hardness * fric_coeff * associated_area);
+  // if no abrasion is occuring return from function with no displacement velocity
+  if (!indentation && !scratching)
+    return;
 
-  // Calculating scalar product of particle velocity and the normal to i
-  vnorm = v_rel[0] * global_normals[0] + v_rel[1] * global_normals[1] + v_rel[2] * global_normals[2];
+  // Calculating relative velocity acting along the surface atom's normal
+  v_norm_dot = v_rel[0] * global_normals[0] + v_rel[1] * global_normals[1] 
+                                            + v_rel[2] * global_normals[2];
+  v_norm[0] = v_norm_dot * global_normals[0];
+  v_norm[1] = v_norm_dot * global_normals[1];
+  v_norm[2] = v_norm_dot * global_normals[2];
 
-  // Calculating the component of velocity normal to i
-  v_norm[0] = vnorm * global_normals[0];
-  v_norm[1] = vnorm * global_normals[1];
-  v_norm[2] = vnorm * global_normals[2];
+  // Calculating velocity acting tangential the surface atom's normal
+  v_tan[0] = v_rel[0] - v_norm[0];
+  v_tan[1] = v_rel[1] - v_norm[1];
+  v_tan[2] = v_rel[2] - v_norm[2];
 
-  // Calculating the component of velocity tangential to i
-  v_tan[0] = v_rel[0] - vnorm * global_normals[0];
-  v_tan[1] = v_rel[1] - vnorm * global_normals[1];
-  v_tan[2] = v_rel[2] - vnorm * global_normals[2];
+  // Normal displacement velocity is equal to v_norm 
+  norm_disp_vel[0] = v_norm[0];
+  norm_disp_vel[1] = v_norm[1];
+  norm_disp_vel[2] = v_norm[2];
 
-  // Calculating normal indentation depth
-  deltah = vnorm * update->dt;
+  // Tangential displacement velocity needs to be calculated from geometric considerations
+  // such that it is still displaced along the atom's normal
 
-  // Calculating tangential indentation depth (resulting from scratching)
-  deltas = MathExtra::len3(v_tan) * update->dt;
+  // calculating the per-atom indentation depth 
+  htp = r_eff - (x_rel[0] * global_normals[0] + x_rel[1]*global_normals[1] * x_rel[2]*global_normals[2]);
 
-  // Per atom indetation depth
-  htp = (x[i][0] * global_normals[0] + x[i][1] * global_normals[1] + x[i][2] * global_normals[2]) -
-      ((x_rel[0] + x[i][0]) * global_normals[0] + (x_rel[1] + x[i][1]) * global_normals[1] +
-       (x_rel[2] + x[i][2]) * global_normals[2] - r_eff);
-
-  // Calculate the normal displacement corresponding to deltas arrising from a tangential impact (from geometric considerations)
-  dsh = htp - r_eff + sqrt(((r_eff - htp) * (r_eff - htp)) + 2.0 * sqrt(abs(2.0 * r_eff * htp - htp * htp)) * deltas);
-
-  // Verify that the indentation depth is positive
-  hl = htp > 0.0;
-
-  // Calculate total normal displacement
-  total_normal_displacement = (indentation * deltah) - (scratching * hl * dsh);
-
+  // htp this must be positive for scratching to occur
+  if (htp > 0.0) {
+    tan_disp_vel_abs = - (htp - r_eff + sqrt( (r_eff - htp)*(r_eff - htp) + 2.0 * sqrt(2.0*r_eff*htp - (htp*htp))*( MathExtra::len3(v_tan) * dt))) / dt;
+    tan_disp_vel[0] = tan_disp_vel_abs * global_normals[0];
+    tan_disp_vel[1] = tan_disp_vel_abs * global_normals[1];
+    tan_disp_vel[2] = tan_disp_vel_abs * global_normals[2];
+  }
+  else {
+    tan_disp_vel[0] = 0.0;
+    tan_disp_vel[1] = 0.0;
+    tan_disp_vel[2] = 0.0;
+  }
+  
+  
+  // Assign displacement velocities, alligned normally, to atom i in global coordinates
+  // Since we are cylcing over all neighbours to i, each interaction can contribute independently to the abrasion of i
+  
+  vertexdata[i][4] += (indentation * norm_disp_vel[0]) + (scratching * tan_disp_vel[0]);
+  vertexdata[i][5] += (indentation * norm_disp_vel[1]) + (scratching * tan_disp_vel[1]);
+  vertexdata[i][6] += (indentation * norm_disp_vel[2]) + (scratching * tan_disp_vel[2]);
+  
   // // Calculating the cumulative work done to displace the atom
   // vertexdata[i][8] += fabs(fnorm) * fabs(total_normal_displacement);
-
-  if (total_normal_displacement){
   
-    // Summing to the owning body (which maybe stored as a ghost)
-    // body[atom2body[i]].wear_energy += fabs(fnorm) * fabs(total_normal_displacement);
-
-    // Calculate the total displacement speed in global coordinates
-    displacement_speed = (total_normal_displacement / update->dt);
-
-    // Assign displacement velocities, alligned normally, to atom i in global coordinates
-    // Since we are cylcing over all neighbours to i, each can contribute independently to the abrasion of i
-    vertexdata[i][4] += displacement_speed * global_normals[0];
-    vertexdata[i][5] += displacement_speed * global_normals[1];
-    vertexdata[i][6] += displacement_speed * global_normals[2];
-  }
-
+  // Summing to the owning body (which maybe stored as a ghost)
+  // body[atom2body[i]].wear_energy += fabs(fnorm) * fabs(total_normal_displacement);
 }
 
 /* ----------------------------------------------------------------------
@@ -2176,6 +2178,7 @@ void FixRigidAbrade::remesh(std::vector<int> dlist)
   // clearing remeshing vectors and setting flags
   boundaries.clear();
   edges.clear();
+  dlist_displacements.clear();
   new_angles_list.clear();
   new_angles_type.clear();
   remesh_overflow_threshold = 0;
@@ -2184,26 +2187,30 @@ void FixRigidAbrade::remesh(std::vector<int> dlist)
   // Cycling through atoms to be removed to set their appropriate tags and decrement the number of atoms in their respective bodies
   for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++) {
 
-    // initiate vector to hold the boundaries and edges for each atom in dlist (intiated now to preserve indexing used in communication)
+   // initiate vector to hold the boundaries and edges for each atom in dlist (intiated now to preserve indexing used in communication)
     boundaries.push_back({});
     edges.push_back({});
     new_angles_list.push_back({});
-    new_angles_type.push_back(
-        -1);    // -1 being a placeholder value which will be updated during remeshing
-
+    new_angles_type.push_back(-1);    // -1 being a placeholder value which will be updated during remeshing
+  
     // Reading in the tag of the atom in the dlist and its owning body
     remove_tag = dlist[dlist_i];
     body_remove_tag = body_dlist[dlist_i];
-
+    
     // storing all the atoms that have been remeshed on this timestep so that they can be deleted before the neighborlists are rebuilt.
     // This is a separate vector to dlist since multiple dlists can be remeshed on a given timestep under a single rebuilding of the neighbor lists.
     total_dlist.push_back(remove_tag);
     total_body_dlist.push_back(body_remove_tag);
-
+    
     // Get the local index of the atom to be removed and the index of the owning body
     tagint remove_id = atom->map(remove_tag);
     tagint body_remove_id = atom2body[atom->map(body_remove_tag)];
-
+    
+    // if atom is stored locally save its cumulative abrasion displacement to be distributed to its boundary atoms
+    if ((remove_id < 0) || (remove_id >= atom->nlocal))  
+      dlist_displacements.push_back(0);    // 0 being a placeholder value which will be updated during remeshing
+    else  dlist_displacements.push_back(vertexdata[remove_id][7]);
+    
     // decrementing the number of atoms in the body
     body[body_remove_id].natoms--;
 
@@ -2233,6 +2240,14 @@ void FixRigidAbrade::remesh(std::vector<int> dlist)
       atom2body[remove_id] = -1;
     }
   }
+
+  // reverse comm the cumulative displacements
+  commflag = CUMULATIVE_DISPLACEMENTS;
+  comm->reverse_comm(this);
+
+  // forward comm the cumulative displacements
+  commflag = CUMULATIVE_DISPLACEMENTS;
+  comm->forward_comm(this);
 
   // ------------------------------------------- Breaking angles and constructing edges around the remesh boundary ------------------------------------------
 
@@ -2342,7 +2357,7 @@ void FixRigidAbrade::remesh(std::vector<int> dlist)
   }
 
   // std::cout << me << FCYN(": Generating Angles") << std::endl;
-
+  
   for (int dlist_i = 0; dlist_i < dlist.size(); dlist_i++) {
 
     remove_tag = dlist[dlist_i];
@@ -2364,6 +2379,13 @@ void FixRigidAbrade::remesh(std::vector<int> dlist)
     for (int i = 0; i < boundary.size(); i++)
       temp_boundary.push_back(boundary[(i + max_tag_index) % static_cast<int>(boundary.size())]);
     boundary = temp_boundary;
+    
+    // distributing the cumulative displacement of the dlist atom to its boundary atoms
+    for (int i = 0; i < boundary.size(); i++) {
+      // only consider boundary atoms which are stored as local atoms
+      if ((atom->map(boundary[i]) < 0) || (atom->map(boundary[i]) >= nlocal)) continue;
+        vertexdata[atom->map(boundary[i])][7] += dlist_displacements[dlist_i] / static_cast<double>(boundary.size());
+      }
 
     // std::cout << me << FGRN(": Boundary for atom ") << remove_tag << FGRN(": max element = ")
     //           << max_tag_index << ": ";
@@ -3007,7 +3029,7 @@ void FixRigidAbrade::final_integrate()
   commflag = ABRADED_FLAG;
   comm->forward_comm(this, 1);
 
-  // // TODO: Check that hese calculations and the subsequent communication is correct
+  // // TODO: Check that these energy calculations and the subsequent communication is correct
   // // reverse comm cumulative wear energy from ghost bodies and reset for the following timestep
   // commflag = WEAR_ENERGY;
   // comm->reverse_comm(this, 1);
@@ -3031,13 +3053,13 @@ void FixRigidAbrade::final_integrate()
     offset_vertices_outwards();
 
   // recalculate properties and normals for each abraded body
-  if (dynamic_flag) resetup_bodies_static();
+  resetup_bodies_static();
 
-  // if resetup_bodies_static() is not called then displace[i] is not communicated to ghosts.
-  else {
-    commflag = DISPLACE;
-    comm->forward_comm(this, 3);
-  }
+  // // if resetup_bodies_static() is not called then displace[i] is not communicated to ghosts.
+  // else {
+  //   commflag = DISPLACE;
+  //   comm->forward_comm(this, 3);
+  // }
 
   // recalculate areas and normals using the updated body coordinates stored in displace[i] (also check if remeshing is required)
   areas_and_normals();
@@ -3057,6 +3079,28 @@ void FixRigidAbrade::final_integrate()
 }
   global_abraded_flag = 0;
   proc_abraded_flag = 0;
+
+
+  // storing normals in global coords for visualisation
+
+  // double bodynormals[3], global_normals[3];  
+  // for (int i = 0; i < atom->nlocal; i++) {
+  
+  // Checking that atom i is in a rigid body
+  // if (atom2body[i] < 0) continue;
+
+  // bodynormals[0] = vertexdata[i][0];
+  // bodynormals[1] = vertexdata[i][1];
+  // bodynormals[2] = vertexdata[i][2];
+
+  // Body *b = &body[atom2body[i]];
+  // MathExtra::matvec(b->ex_space, b->ey_space, b->ez_space, bodynormals, global_normals);
+
+  // vertexdata[i][8]  = global_normals[0];
+  // vertexdata[i][9]  = global_normals[1];
+  // vertexdata[i][10] = global_normals[2];
+  // }
+
 
 }
 
@@ -3175,12 +3219,13 @@ void FixRigidAbrade::end_of_step()
     nghost_body = 0;
     commflag = FULL_BODY;
     comm->forward_comm(this);
-
+    reset_atom2body();
+    
     offset_vertices_outwards();
 
-    if (dynamic_flag) {
-      resetup_bodies_static();
-    }
+
+    resetup_bodies_static();
+    
 
     areas_and_normals();
     offset_vertices_inwards();
@@ -3197,6 +3242,9 @@ void FixRigidAbrade::end_of_step()
     }
 
   }
+
+  if (update->ntimestep == output->next_restart)
+    restart_file = 1;
 
   // if (me == 0)
   // if (!(update->ntimestep%10000) )
@@ -4693,8 +4741,8 @@ void FixRigidAbrade::setup_bodies_static()
               <<  std::endl;
               }
 
-  if (dynamic_flag) {    // error check that re-computed moments of inertia match diagonalized ones
-    // do not do test for bodies with params read from inpfile
+  // if (dynamic_flag) {    // error check that re-computed moments of inertia match diagonalized ones
+  //   // do not do test for bodies with params read from inpfile
 
     double norm;
     for (ibody = 0; ibody < nlocal_body; ibody++) {
@@ -4727,7 +4775,7 @@ void FixRigidAbrade::setup_bodies_static()
           fabs(itensor[ibody][4] / norm) > TOLERANCE || fabs(itensor[ibody][5] / norm) > TOLERANCE)
         error->all(FLERR, "Fix rigid: Bad principal moments");
     }
-  }
+  // }
 
   // clean up
 
@@ -5434,7 +5482,9 @@ void FixRigidAbrade::resetup_bodies_static()
   //             << " owning atom (" << atom->x[body[ibody].ilocal][0] << ", " << atom->x[body[ibody].ilocal][1] << ", " << atom->x[body[ibody].ilocal][2] << ") [" << displace[body[ibody].ilocal][0] << ", " << displace[body[ibody].ilocal][1] << ", " << displace[body[ibody].ilocal][2] << "]\n "
   //             <<  std::endl;
   //             }
-
+  
+  // TODO: this is required if the newly calculated mass is to be immediately reflected in the pairstyle
+  // neighbor->ago = -1;
 }
 
 /* ----------------------------------------------------------------------
@@ -5542,7 +5592,7 @@ void FixRigidAbrade::setup_bodies_dynamic()
   commflag = VCM;
   comm->reverse_comm(this, 3);
 
-  // normalize velocity of COM
+  // divide velocity of COM by the mass
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     vcm = body[ibody].vcm;
     vcm[0] /= body[ibody].mass;
@@ -5665,6 +5715,7 @@ void FixRigidAbrade::setup_bodies_dynamic()
   commflag = ANGMOM;
   comm->reverse_comm(this, 3);
 
+  // setting values for ghost bodies to 0.
   for (int ibody = nlocal_body; ibody < (nlocal_body + nghost_body); ibody++) {
     body[ibody].vcm[0] = 0.0;
     body[ibody].vcm[1] = 0.0;
@@ -5998,6 +6049,10 @@ void FixRigidAbrade::set_arrays(int i)
   vertexdata[i][5] = 0.0;
   vertexdata[i][6] = 0.0;
   vertexdata[i][7] = 0.0;
+
+  // vertexdata[i][8] = 0.0;
+  // vertexdata[i][9] = 0.0;
+  // vertexdata[i][10] = 0.0;
 
   // must also zero vatom if per-atom virial calculated on this timestep
   // since vatom is calculated before and after atom migration
@@ -6339,6 +6394,21 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf, int /*pbc_f
         buf[m++] = static_cast<double>(new_angles_list[array_index][k][2]);
       }
     }
+  } else if (commflag == CUMULATIVE_DISPLACEMENTS) {
+
+    for (i = 0; i < n; i++) {
+      j = list[i];
+
+      // Only communicating properties relevant to atoms in the dlist
+      if (!count(dlist.begin(), dlist.end(), atom->tag[j])) continue;
+
+      // get index of atom in the local dlist to acess its value
+      int array_index =  static_cast<int>(find(dlist.begin(), dlist.end(), atom->tag[j]) - dlist.begin());
+
+      // packing vertexdata[i][7]
+      buf[m++] = static_cast<double>(dlist_displacements[array_index]);
+
+    }
   } else if (commflag == XCM) {
     for (i = 0; i < n; i++) {
       j = list[i];
@@ -6352,7 +6422,16 @@ int FixRigidAbrade::pack_forward_comm(int n, int *list, double *buf, int /*pbc_f
       buf[m++] = body[bodyown[j]].xcm[2];
     }
 
-  }else if (commflag == MIN_AREA) {
+  } else if (commflag == BODY_MASS) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+
+      if (bodyown[j] < 0) continue;
+      buf[m++] = body[bodyown[j]].mass;
+
+    }
+
+  } else if (commflag == MIN_AREA) {
     for (i = 0; i < n; i++) {
       j = list[i];
 
@@ -6550,6 +6629,20 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
       }
     }
 
+  } else if (commflag == CUMULATIVE_DISPLACEMENTS) {
+    for (i = first; i < last; i++) {
+
+      // Only communicating properties relevant to atoms in the dlist
+      if (!count(dlist.begin(), dlist.end(), atom->tag[i])) continue;
+
+      // get index of atom in the local dlist to acess its stored local value
+      int rec_array_index =
+          static_cast<int>(find(dlist.begin(), dlist.end(), atom->tag[i]) - dlist.begin());
+
+      int incoming_cumulative_displacement = static_cast<int>(buf[m++]);
+      if (incoming_cumulative_displacement > 0.0) dlist_displacements[rec_array_index] = incoming_cumulative_displacement;
+    }
+
   } else if (commflag == XCM) {
     for (i = first; i < last; i++) {
 
@@ -6560,6 +6653,14 @@ void FixRigidAbrade::unpack_forward_comm(int n, int first, double *buf)
       body[bodyown[i]].xcm[0] = buf[m++];
       body[bodyown[i]].xcm[1] = buf[m++];
       body[bodyown[i]].xcm[2] = buf[m++];
+    }
+
+  } else if (commflag == BODY_MASS) {
+    for (i = first; i < last; i++) {
+
+      if (bodyown[i] < 0) continue;
+      body[bodyown[i]].mass = buf[m++];
+
     }
 
   } else if (commflag == MIN_AREA) {
@@ -6779,7 +6880,21 @@ int FixRigidAbrade::pack_reverse_comm(int n, int first, double *buf)
       edges[array_index].clear();
     }
 
-  } else if (commflag == DOF) {
+  } else if (commflag == CUMULATIVE_DISPLACEMENTS) {
+    for (i = first; i < last; i++) {
+
+      // Only communicating properties relevant to atoms in the dlist
+      if (!count(dlist.begin(), dlist.end(), atom->tag[i])) continue;
+
+      // get index of atom in the local dlist to acess its stored local value
+      int array_index =static_cast<int>(find(dlist.begin(), dlist.end(), atom->tag[i]) - dlist.begin());
+
+      // packing vertexdata[i][7]
+      buf[m++] = static_cast<double>(dlist_displacements[array_index]);
+    }
+
+  } 
+  else if (commflag == DOF) {
     for (i = first; i < last; i++) {
       if (bodyown[i] < 0) continue;
       j = bodyown[i];
@@ -6986,6 +7101,23 @@ void FixRigidAbrade::unpack_reverse_comm(int n, int *list, double *buf)
       }
     }
 
+  }  else if (commflag == CUMULATIVE_DISPLACEMENTS) {
+
+    for (i = 0; i < n; i++) {
+      j = list[i];
+
+      // Only communicating properties relevant to atoms in the dlist
+      if (!count(dlist.begin(), dlist.end(), atom->tag[j])) continue;
+
+      // get index of atom in the local dlist to access its local value
+      int rec_array_index = static_cast<tagint>(find(dlist.begin(), dlist.end(), atom->tag[j]) - dlist.begin());
+
+      // unpacking vertexdata[i][7]
+      int incoming_cumulative_displacement = static_cast<int>(buf[m++]);
+      if (incoming_cumulative_displacement > 0.0) dlist_displacements[rec_array_index] = incoming_cumulative_displacement;
+      
+    }
+
   } else if (commflag == DOF) {
     for (i = 0; i < n; i++) {
       j = list[i];
@@ -7154,6 +7286,10 @@ void *FixRigidAbrade::extract(const char *str, int &dim)
   // used by granular pair styles, indexed by atom2body
 
   if (strcmp(str, "masstotal") == 0) {
+
+    commflag = BODY_MASS;
+    comm->forward_comm(this, 1);
+
     if (!setupflag) return nullptr;
     dim = 1;
 
