@@ -21,8 +21,8 @@ FixStyle(rigid/abrade,FixRigidAbrade);
 #define LMP_FIX_RIGID_ABRADE_H
 
 #include "fix.h"
-#include <algorithm>
 #include <vector>
+#include <algorithm> 
 
 namespace LAMMPS_NS {
 
@@ -43,7 +43,7 @@ class FixRigidAbrade : public Fix {
   void initial_integrate_respa(int, int, int) override;
   void final_integrate_respa(int, int) override;
   void write_restart_file(const char *) override;
-  enum { CONSTANT, EQUAL };
+  enum { CONSTANT, EQUAL};
 
   void grow_arrays(int) override;
   void copy_arrays(int, int, int) override;
@@ -72,43 +72,53 @@ class FixRigidAbrade : public Fix {
   double compute_scalar() override;
   double memory_usage() override;
 
-  double **
-      vertexdata;    // array to store the normals, areas, and displacement velocities, and cumulative displacement of each atom (public to allow access from pairstyles)
+  double **vertexdata;   // array to store the normals, areas, and displacement velocities, and cumulative displacement of each atom (public to allow access from pairstyles)
+  
 
- private:
+private:
+
   class NeighList *list;
   void areas_and_normals();
   void displacement_of_atom(int, double, double[3], double[3]);
-
+  
+  
+  
   int allflag, compress_flag, bond_flag, mol_flag;
+  
 
   int setup_surface_density_threshold_flag;
-  bool angle_check(int, int, std::vector<std::vector<double>>, std::vector<std::vector<double>>,
-                   double[3]);
+  bool angle_check(int, int, std::vector<std::vector<double>>, std::vector<std::vector<double>>, double[3]);
   void remesh(std::vector<int>);
+  
+  void offset_vertices_inwards(void);
+  void offset_vertices_outwards(void);
 
-  std::vector<int> dlist;    // list of atom tags to be remeshed on a call of remesh()
-  std::vector<int>
-      body_dlist;    // list of associated body tags to be remeshed. This is required since there maybe a case where a proc does not own the dlist atom and so would be unable to access body properties
+  std::vector<int> dlist; // list of atom tags to be remeshed on a call of remesh()
+  std::vector<int> body_dlist; // list of associated body tags to be remeshed. This is required since there maybe a case where a proc does not own the dlist atom and so would be unable to access body properties
   std::vector<int> total_dlist;
+  std::vector<int> total_body_dlist;
 
-  // it is possible that these could be made into body properties.
+  // it is possible that these could be made into body properties. 
   std::vector<std::vector<tagint>> boundaries;
+  std::vector<double> dlist_displacements;
   std::vector<std::vector<std::vector<tagint>>> edges;
-  std::vector<std::vector<std::vector<tagint>>> new_angles_list;    // This may be better as a map
+  std::vector<std::vector<std::vector<tagint>>> new_angles_list;  // This may be better as a map
   std::vector<std::vector<tagint>> overflow_anglelist;
   std::vector<int> new_angles_type;
+
 
   int remesh_overflow_threshold = 0;
   int remesh_angle_proc_difference = 0;
   int debug_remesh_once = 0;
   int proc_remesh_flag = 0;
+  int proc_abraded_flag = 0;
   int global_remesh_flag = 0;
-  int remesh_rebuild_flag = 0;
+  int rebuild_flag = 0;
+  int global_abraded_flag = 0;
 
   bigint lastcheck;
   int equalise_surface_flag = 0;
-
+  
   void equalise_surface();
 
  protected:
@@ -118,32 +128,13 @@ class FixRigidAbrade : public Fix {
   int triclinic;
 
   // Modified Commflags
-  enum {
-    FULL_BODY,
-    INITIAL,
-    FINAL,
-    FORCE_TORQUE,
-    VCM,
-    ANGMOM,
-    XCM_VOL,
-    MIN_AREA,
-    EQUALISE,
-    EDGES,
-    NEW_ANGLES,
-    DISPLACE,
-    NORMALS,
-    BODYTAG,
-    ITENSOR,
-    UNWRAP,
-    DOF,
-    ABRADED_FLAG
-  };
+  enum{BODY_MASS, FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM, ANGMOM, XCM, XCM_MASS, MIN_AREA, EQUALISE, EDGES, CUMULATIVE_DISPLACEMENTS, WEAR_ENERGY, NEW_ANGLES, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG};
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
   int dynamic_flag;    // 0 if bodies are held sationary and prevents the COM from being integrated
-  int remesh_flag;     //  1 if bodies are to be remeshed following a change in shape
-  int initial_remesh_flag;    //  1 if bodies are to be remeshed at the start of the simulation to equalise the area_per_atom
+  int remesh_flag;    //  1 if bodies are to be remeshed following a change in shape
+  int initial_remesh_flag; //  1 if bodies are to be remeshed at the start of the simulation to equalise the area_per_atom
   int earlyflag;       // 1 if forces/torques are computed at post_force()
   int commflag;        // various modes of forward/reverse comm
   int customflag;      // 1 if custom property/variable define bodies
@@ -152,29 +143,27 @@ class FixRigidAbrade : public Fix {
   tagint maxmol;       // max mol-ID
   double maxextent;    // furthest distance from body owner to body atom
 
-  double hardness, fric_coeff, density;    // hardness and friction coefficient and particle density
+  double hardness, hardness_ratio, density;       // hardness and shear/normal hardness ratio and particle density
   int varflag;
   int hstyle, mustyle, densitystyle;
   int hvar, muvar, densityvar;
   char *hstr, *mustr, *densitystr;
 
   struct Body {
-    int natoms;       // total number of atoms in body
-    int ilocal;       // index of owning atom
-    double mass;      // total mass of body
-    double volume;    // total volume of body
+    int natoms;            // total number of atoms in body
+    int ilocal;            // index of owning atom
+    double mass;           // total mass of body
+    double volume;         // total volume of body
 
-    double surface_area;    // total surface area of the body
-    double
-        surface_density_threshold;    // natoms/surface_area density calculated at setup to act as a condition for remeshing
-    double min_area_atom;    // the smallest area associated with an atom within the body
-    tagint
-        min_area_atom_tag;    // tag of the atom in the body which has the smallest associated area
+    double surface_area; // total surface area of the body
+    double surface_density_threshold; // natoms/surface_area density calculated at setup to act as a condition for remeshing
+    double min_area_atom; // the smallest area associated with an atom within the body
+    tagint min_area_atom_tag; // tag of the atom in the body which has the smallest associated area
+    double wear_energy; // cumulative work done when displacing surface atoms in the body
 
-    double density;    // mass density of the body
-    double xcm[3];     // COM position
-    double xgc
-        [3];    // geometric center position - should equal xcm for the assumed homogenous mass density
+    double density;        // mass density of the body
+    double xcm[3];         // COM position
+    double xgc[3];         // geometric center position - should equal xcm for the assumed homogenous mass density
     double vcm[3];         // COM velocity
     double fcm[3];         // force on COM
     double torque[3];      // torque around COM
@@ -188,11 +177,12 @@ class FixRigidAbrade : public Fix {
     double omega[3];       // space-frame omega of body
     double conjqm[4];      // conjugate quaternion momentum
     int remapflag[4];      // PBC remap flags
-    int abraded_flag;      // flag which marks that the body has abraded and changed shape
-    tagint
-        remesh_atom;    // atom to be added to dlist on each call of remesh(), 0 if no atom to be added
-    imageint image;    // image flags of xcm
-    imageint dummy;    // dummy entry for better alignment
+    
+    int abraded_flag;     // flag which marks that the body has abraded and changed shape
+    int offset_flag;    
+    tagint remesh_atom;      // atom to be added to dlist on each call of remesh(), 0 if no atom to be added
+    imageint image;        // image flags of xcm
+    imageint dummy;        // dummy entry for better alignment  
   };
 
   Body *body;         // list of rigid bodies, owned and ghost
@@ -212,7 +202,7 @@ class FixRigidAbrade : public Fix {
   imageint *xcmimage;    // internal image flags for atoms in rigid bodies
                          // set relative to in-box xcm of each body
   double **displace;     // displacement of each atom in body coords
-  double **unwrap;       // unwrapped coords of each atom in global coords
+  double **unwrap;     // unwrapped coords of each atom in global coords
   int *eflags;           // flags for extended particles
   double **orient;       // orientation vector of particle wrt rigid body
   double **dorient;      // orientation of dipole mu wrt rigid body
@@ -228,9 +218,8 @@ class FixRigidAbrade : public Fix {
 
   // temporary per-body storage
 
-  int **counts;    // counts of atom types in bodies
-  double **
-      equalise_surface_array;    // used to store standard deviation of body surface areas during equalise_surface()
+  int **counts;        // counts of atom types in bodies
+  double **equalise_surface_array;        // used to store standard deviation of body surface areas during equalise_surface()
   double **itensor;    // 6 space-frame components of inertia tensor
 
   // mass per body, accessed by granular pair styles
@@ -290,13 +279,14 @@ class FixRigidAbrade : public Fix {
   void set_xv();
   void set_v();
   void create_bodies(tagint *);
+  void pre_setup_bodies_static();
   void setup_bodies_static();
   void resetup_bodies_static();
   void setup_bodies_dynamic();
   void apply_langevin_thermostat();
   void compute_forces_and_torques();
   void enforce2d();
-  void readfile(int, double **, int *);
+  void readfile();
   void grow_body();
   void reset_atom2body();
 
