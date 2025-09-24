@@ -49,6 +49,6 @@ class ComputeRigidLocalAbrade : public Compute {
 };
 
 }    // namespace LAMMPS_NS
-
+ 
 #endif
 #endif
