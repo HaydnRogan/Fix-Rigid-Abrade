@@ -13,14 +13,16 @@
 ------------------------------------------------------------------------- */
 
 #include "compute_rigid_local_abrade.h"
-#include <cstring>
+
 #include "atom.h"
-#include "update.h"
 #include "domain.h"
+#include "error.h"
 #include "modify.h"
 #include "fix_rigid_abrade.h"
 #include "memory.h"
-#include "error.h"
+#include "update.h"
+
+#include <cstring>
 
 using namespace LAMMPS_NS;
 
@@ -28,7 +30,8 @@ static constexpr int DELTA = 10000;
 
 enum{ID,MOL,MASS,X,Y,Z,XU,YU,ZU,VX,VY,VZ,FX,FY,FZ,IX,IY,IZ,
      TQX,TQY,TQZ,OMEGAX,OMEGAY,OMEGAZ,ANGMOMX,ANGMOMY,ANGMOMZ,
-     QUATW,QUATI,QUATJ,QUATK,INERTIAX,INERTIAY,INERTIAZ, VOLUME, SURFACE_AREA};
+     QUATW,QUATI,QUATJ,QUATK,INERTIAX,INERTIAY,INERTIAZ, VOLUME, SURFACE_AREA, ABRADED_VOLUME, WEAR_ENERGY};
+
 
 /* ---------------------------------------------------------------------- */
 
@@ -83,13 +86,15 @@ ComputeRigidLocalAbrade::ComputeRigidLocalAbrade(LAMMPS *lmp, int narg, char **a
     else if (strcmp(arg[iarg],"inertiaz") == 0) rstyle[nvalues++] = INERTIAZ;
     else if (strcmp(arg[iarg],"volume") == 0) rstyle[nvalues++] = VOLUME;
     else if (strcmp(arg[iarg],"surface_area") == 0) rstyle[nvalues++] = SURFACE_AREA;
-    else error->all(FLERR,"Invalid keyword in compute rigid/local_abrade command");
+    else if (strcmp(arg[iarg],"abraded_volume") == 0) rstyle[nvalues++] = ABRADED_VOLUME;
+    else if (strcmp(arg[iarg],"wear_energy") == 0) rstyle[nvalues++] = WEAR_ENERGY;
+    else error->all(FLERR,"Invalid keyword in compute rigid/local_abrade_abrade command");
   }
 
   if (nvalues == 1) size_local_cols = 0;
   else size_local_cols = nvalues;
 
-ncount = nmax = 0;
+  ncount = nmax = 0;
   vlocal = nullptr;
   alocal = nullptr;
 }
@@ -100,8 +105,8 @@ ComputeRigidLocalAbrade::~ComputeRigidLocalAbrade()
 {
   memory->destroy(vlocal);
   memory->destroy(alocal);
-  delete [] idrigid;
-  delete [] rstyle;
+  delete[] idrigid;
+  delete[] rstyle;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -110,16 +115,11 @@ void ComputeRigidLocalAbrade::init()
 {
   // set fixrigid
 
-  int ifix = modify->find_fix(idrigid);
-  if (ifix < 0)
-    error->all(FLERR,"FixRigidAbrade ID for compute rigid/local_abrade does not exist");
-  fixrigid = dynamic_cast<FixRigidAbrade *>(modify->fix[ifix]);
-
-  int flag = 0;
-  if (strstr(fixrigid->style,"rigid/") == nullptr) flag = 1;
-  if (strstr(fixrigid->style,"/abrade") == nullptr) flag = 1;
-  if (flag)
-    error->all(FLERR,"Compute rigid/local_abrade does not use fix rigid/abrade fix");
+  auto *ifix = modify->get_fix_by_id(idrigid);
+  if (!ifix) error->all(FLERR,"FixRigidAbrade ID {} for compute rigid/local_abrade does not exist", idrigid);
+  fixrigid = dynamic_cast<FixRigidAbrade *>(ifix);
+  if (!fixrigid)
+    error->all(FLERR,"Fix ID {} for compute rigid/local_abrade does not point to fix rigid/abrade", idrigid);
 
   // do initial memory allocation so that memory_usage() is correct
 
@@ -286,6 +286,12 @@ int ComputeRigidLocalAbrade::compute_rigid(int flag)
           break;
         case SURFACE_AREA:
           ptr[n] = body->surface_area;
+          break;
+        case ABRADED_VOLUME:
+          ptr[n] = body->abraded_volume;
+          break;
+        case WEAR_ENERGY:
+          ptr[n] = body->wear_energy;
           break;
         }
       }
