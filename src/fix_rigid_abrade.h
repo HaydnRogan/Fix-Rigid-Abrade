@@ -21,8 +21,6 @@ FixStyle(rigid/abrade,FixRigidAbrade);
 #define LMP_FIX_RIGID_ABRADE_H
 
 #include "fix.h"
-#include <vector>
-#include <algorithm> 
 
 namespace LAMMPS_NS {
 
@@ -49,6 +47,9 @@ class FixRigidAbrade : public Fix {
   void copy_arrays(int, int, int) override;
   void set_arrays(int) override;
   void set_molecule(int, tagint, int, double *, double *, double *) override;
+  void resample_momenta(int, int, class RanPark *, double);
+
+
   int pack_exchange(int, double *) override;
   int unpack_exchange(int, double *) override;
   int pack_forward_comm(int, int *, double *, int, int *) override;
@@ -82,11 +83,8 @@ private:
   void displacement_of_atom(int, double, double[3], double[3]);
   
   
-  
   int allflag, compress_flag, bond_flag, mol_flag;
   
-
-  int setup_surface_density_threshold_flag;
   bool valid_angle_check(int, int, int, const std::vector<std::vector<double>>  &, const std::vector<double>  &);
   void triangle_thetas(int, int, int, const std::vector<std::vector<double>>  &, double *);
   void remesh(std::vector<int>);
@@ -121,7 +119,7 @@ private:
   bigint lastcheck;
   int equalise_surface_flag = 0;
   
-  int RESTART_ATTRIBUTE_PERBODY = 9;
+  int RESTART_ATTRIBUTE_PERBODY = 10;
   void equalise_surface();
 
  protected:
@@ -131,7 +129,7 @@ private:
   int triclinic;
 
   // Modified Commflags
-  enum{BODY_MASS, FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM, ANGMOM, XCM, XCM_MASS, MIN_AREA, EQUALISE, EDGES, CUMULATIVE_DISPLACEMENTS, ABRADED_VOLUME, WEAR_ENERGY, NEW_ANGLES, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG, DISPLACEMENT_VEL, SURFACE_AREA};
+  enum{BODY_MASS, FULL_BODY, INITIAL, FINAL, FORCE_TORQUE, VCM, ANGMOM, XCM_MASS, MIN_AREA, EQUALISE, EDGES, WEAR_ENERGY, NEW_ANGLES, MASS_NATOMS, DISPLACE, NORMALS, BODYTAG, ITENSOR, UNWRAP, DOF, ABRADED_FLAG, DISPLACEMENT_VEL, SURFACE_AREA};
 
   char *inpfile;       // file to read rigid body attributes from
   int setupflag;       // 1 if body properties are setup, else 0
@@ -160,7 +158,9 @@ private:
     int ilocal;            // index of owning atom
     double mass;           // total mass of body
     double volume;         // total volume of body
+    double initial_volume; // starting volume of the body
     double abraded_volume; // total volume lost from the body
+
 
     double surface_area; // total surface area of the body
     double surface_density_threshold; // natoms/surface_area density calculated at setup to act as a condition for remeshing
@@ -212,12 +212,8 @@ private:
   double **displace;     // displacement of each atom in body coords
   double **unwrap;     // unwrapped coords of each atom in global coords
   int *eflags;           // flags for extended particles
-  double **orient;       // orientation vector of particle wrt rigid body
-  double **dorient;      // orientation of dipole mu wrt rigid body
 
   int extended;       // 1 if any particles have extended attributes
-  int orientflag;     // 1 if particles store spatial orientation
-  int dorientflag;    // 1 if particles store dipole orientation
   int reinitflag;     // 1 if re-initialize rigid bodies between runs
 
   class AtomVecEllipsoid *avec_ellipsoid;
@@ -229,7 +225,6 @@ private:
   int **counts;        // counts of atom types in bodies
   double **equalise_surface_array;        // used to store standard deviation of body surface areas during equalise_surface()
   double **itensor;    // 6 space-frame components of inertia tensor
-  double *prev_volume;    // 6 space-frame components of inertia tensor
 
   // mass per body, accessed by granular pair styles
 
