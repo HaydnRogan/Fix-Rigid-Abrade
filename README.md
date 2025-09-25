@@ -23,8 +23,7 @@ in terminal at src:
 
 To run the input script:
 
-- Place ./examples/in.example_script and ./examples/example_sphere.mol in your <project_directory>
-- Open <project_directory> in terminal
-- "mpirun --oversubscribe -np N lmp_mpi -in in.example_script" where N is the number of processors your wish to run
-   Visualise dump.example_output in Ovito or other visualiser of your choice
+- Open the relevant ./Example_Scripts/ directory in terminal
+- "mpirun --oversubscribe -np N lmp_mpi -in in.<example_script>" where N is the number of processors your wish to run
+- Visualise dump.pos in Ovito or other visualiser of your choice
 
