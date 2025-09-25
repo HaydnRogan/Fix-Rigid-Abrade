@@ -15,7 +15,6 @@ Option 1 - Appending src files into your own LAMMPS Feature Release	(10Sep2025) 
 
 in terminal at src:
 
-- make yes-molecule
 - make yes-granular
 - make yes-rigid
 - make mpi
