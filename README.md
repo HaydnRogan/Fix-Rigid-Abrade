@@ -1,4 +1,4 @@
-# Fix_Abrasion
+# Fix Rigid/Abrade
 
 Personal repository for the development of Fix Rigid/Abrade. 
 
