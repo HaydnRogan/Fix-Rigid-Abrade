@@ -2,7 +2,7 @@
 
 Personal repository for the development of Fix Rigid/Abrade. 
 
-A sample input scripts, with the relevant mol files, are provided in ./examples
+A sample input scripts, with the relevant mol files, are provided in ./Example_Scripts
 
 To compile:
 
@@ -23,6 +23,6 @@ in terminal at src:
 To run the input script:
 
 - Open the relevant ./Example_Scripts/ directory in terminal
-- "mpirun --oversubscribe -np N lmp_mpi -in in.<example_script>" where N is the number of processors your wish to run
+- "mpirun --oversubscribe -np N lmp_mpi -in in.<example_script>" where N is the number of processors you wish to run
 - Visualise dump.pos in Ovito or other visualiser of your choice
 
