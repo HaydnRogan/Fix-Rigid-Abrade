@@ -5495,7 +5495,7 @@ void FixRigidAbrade::readfile()
         ValueTokenizer values(buf);
         int read_offset_flag = values.next_int();
 
-        if (offset_flag != read_offset_flag && me == 0) error->one(FLERR, "fix rigid/abrade: Dissagreement between the offset_flag defined in the input script and {}", inpfile);
+        if (offset_flag != read_offset_flag && me == 0) error->one(FLERR, "fix rigid/abrade: Disagreement between the offset_flag defined in the input script and {}", inpfile);
 
       } catch (TokenizerException &e) {
         error->all(FLERR, "Invalid fix rigid/abrade infile: {}", e.what());
