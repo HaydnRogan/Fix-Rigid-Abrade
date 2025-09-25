@@ -1,4 +1,4 @@
-# Create two abradable particles and have them fall under gravity onto a wall defined through fix wall/gran/region
+# Create a single stationary abradable particles and impact it with a spherical atom
 
 ###############################################
 # Variable Definitions
