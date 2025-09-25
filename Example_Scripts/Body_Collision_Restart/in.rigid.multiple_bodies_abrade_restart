@@ -1,4 +1,4 @@
-# Create mutliple abradable bodies, assign them an initial velocity, and output the associated restart files.
+# Create multiple abradable bodies, assign them an initial velocity, and output the associated restart files.
 
 ###############################################
 # Variable Definitions
@@ -6,7 +6,7 @@
 
 
 # Variables
-variable E equal 4.76*0.1 # Youngs modulus [GPa]
+variable E equal 4.76*0.1 # Young's modulus [GPa]
 variable poisson equal 0.4 # Poisson Ratio [-]
 variable G equal ${E}/(2*(1+${poisson})) # Shear modulus [GPa]
 variable kn equal (4*${G}/(3*((1-${poisson}))))*(1e+10) # Normal Elastic Constant
