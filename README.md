@@ -2,18 +2,15 @@
 
 Personal repository for the development of Fix Rigid/Abrade. 
 
-A sample input script, with the relevant mol files, is provided in ./examples
+A sample input scripts, with the relevant mol files, are provided in ./examples
 
 To compile:
 
-Option 1 - Appending src files into your own LAMMPS repository:
+Option 1 - Appending src files into your own LAMMPS Feature Release	(10Sep2025) repository:
 
   - Place the fix_rigid_abrade .cpp and .h file in your LAMMPS src/RIGID/
+  - Place the compute_rigid_local_abrade .cpp and .h file in the same directory
   - Place the fix_wall_gran_region .cpp and .h file in your LAMMPS src/GRANULAR
-
-Option 2 - Clone Fix Rigi/Abrade LAMMPS development fork:
-
-  - clone repository from https://github.com/HaydnRogan/lammps.git
 
 
 in terminal at src:
