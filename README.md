@@ -17,7 +17,7 @@ in terminal at src:
 
 - make yes-granular
 - make yes-rigid
-- - make yes-molecule
+- make yes-molecule
 - make mpi
 - mv lmp_mpi to your <project_directory>
 
