@@ -745,6 +745,9 @@ void FixRigidAbrade::setup_pre_neighbor()
 
   if (reinitflag || !setupflag) {
 
+    if (comm->me == 0 && neighbor->style != Neighbor::MULTI)
+      error->one(FLERR, "fix rigid/abrade requires hybrid neighbor lists to be enabled through the multi neighbor style.");
+
     // if starting from a restart file then atoms need to be displaced 
     // outwards from their COM to allign with the icosohedra vertices
     if (update->ntimestep > 0) 
